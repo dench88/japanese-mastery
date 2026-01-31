@@ -1,0 +1,1 @@
+An app that delivers intense study for advanced Japanese learners
