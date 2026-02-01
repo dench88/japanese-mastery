@@ -1,0 +1,96 @@
+<!-- static/index.html -->
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>JP Drill – v0</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      body {
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+          sans-serif;
+        max-width: 600px;
+        margin: 2rem auto;
+        padding: 0 1rem;
+      }
+      textarea {
+        width: 100%;
+        font-size: 1rem;
+      }
+      button {
+        padding: 0.5rem 1rem;
+        margin-top: 0.5rem;
+        font-size: 1rem;
+        cursor: pointer;
+      }
+      #status {
+        margin-top: 0.5rem;
+        font-size: 0.9rem;
+        color: #555;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Japanese Sentence TTS – v0</h1>
+
+    <p>Type or paste a Japanese sentence, then hit “Speak”.</p>
+
+    <textarea id="text" rows="4">
+今日はとてもいい天気ですね。</textarea
+    >
+    <br />
+    <button id="speak">Speak</button>
+
+    <div id="status"></div>
+
+    <audio id="player" controls style="margin-top: 1rem; width: 100%;"></audio>
+
+    <script>
+      const speakBtn = document.getElementById("speak");
+      const textEl = document.getElementById("text");
+      const statusEl = document.getElementById("status");
+      const player = document.getElementById("player");
+
+      speakBtn.onclick = async () => {
+        const text = textEl.value.trim();
+        if (!text) {
+          alert("Please enter some text.");
+          return;
+        }
+
+        statusEl.textContent = "Generating audio...";
+        speakBtn.disabled = true;
+
+        try {
+          const res = await fetch("/api/tts", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              text,
+              voice: "coral", // match backend default or change here
+            }),
+          });
+
+          if (!res.ok) {
+            statusEl.textContent = "Error from server.";
+            speakBtn.disabled = false;
+            return;
+          }
+
+          const blob = await res.blob();
+          const url = URL.createObjectURL(blob);
+          player.src = url;
+          await player.play();
+          statusEl.textContent = "Playing.";
+        } catch (err) {
+          console.error(err);
+          statusEl.textContent = "Error generating or playing audio.";
+        } finally {
+          speakBtn.disabled = false;
+        }
+      };
+    </script>
+  </body>
+</html>
