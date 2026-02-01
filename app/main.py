@@ -1,98 +1,75 @@
 # app/main.py
 from pathlib import Path
+import re
+import os
 
-from fastapi import FastAPI, Response
+from fastapi import FastAPI, Response, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from pathlib import Path
+
 from dotenv import load_dotenv
 from openai import OpenAI
-import os
 
-
-# load_dotenv()  # loads OPENAI_API_KEY from .env
+# --- paths & env ---
 ROOT_DIR = Path(__file__).resolve().parents[1]
-load_dotenv(ROOT_DIR / ".env")
+ENV_PATH = ROOT_DIR / ".env"
+load_dotenv(ENV_PATH)  # harmless if you prefer setting env manually
 
-# client = OpenAI() 
-client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+# OpenAI client - relies on OPENAI_API_KEY being in environment
+# client = OpenAI()
+
+# --- load and split book text ---
+BOOK_PATH = ROOT_DIR / "content" / "raw" / "sample-writing-cafune-1.txt"
+BOOK_TEXT = BOOK_PATH.read_text(encoding="utf-8")
+
+# Split on Japanese sentence-ending punctuation: 。！？ plus ascii !?
+SENTENCE_PATTERN = re.compile(r"(?<=[。！？!?])\s*")
+SENTENCES = [s for s in SENTENCE_PATTERN.split(BOOK_TEXT.strip()) if s]
 
 app = FastAPI()
 
-# Serve static files (your HTML, JS, etc.)
-app.mount("/static", StaticFiles(directory="static"), name="static")
+# serve static files
+app.mount("/static", StaticFiles(directory=ROOT_DIR / "static"), name="static")
 
 
 class TTSRequest(BaseModel):
     text: str
-    voice: str | None = "coral"  # default voice; you can change
+    voice: str | None = "coral"
 
 
 @app.get("/")
 async def root():
-    # Serve the main HTML page
-    return FileResponse("static/index.html")
+    return FileResponse(ROOT_DIR / "static" / "index.html")
+
+
+@app.get("/api/book")
+async def get_book():
+    """Return full book text."""
+    return {"text": BOOK_TEXT}
+
+
+@app.get("/api/sentence/{index}")
+async def get_sentence(index: int):
+    """Return the sentence at the given index."""
+    total = len(SENTENCES)
+    if index < 0 or index >= total:
+        raise HTTPException(status_code=404, detail="No more sentences.")
+    return {
+        "index": index,
+        "sentence": SENTENCES[index],
+        "total": total,
+    }
 
 
 @app.post("/api/tts")
 async def tts(req: TTSRequest):
-    """
-    Generate Japanese audio from text and return as MP3.
-    """
-    # Call OpenAI TTS; non-streaming, returns bytes in current client
+    client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+
     audio_bytes = client.audio.speech.create(
-        model="gpt-4o-mini-tts",  # adjust if model name changes
+        model="gpt-4o-mini-tts",
         voice=req.voice,
         input=req.text,
         response_format="mp3",
-        # instructions can be baked into the text or added here later if needed
     )
-
-    # FastAPI will send this as audio/mpeg
     return Response(content=audio_bytes, media_type="audio/mpeg")
-
-
-# # with open('content/raw/sample-writing-cafune-1.txt', 'r', encoding='utf-8') as f:
-# #     book_text = f.read()
-
-# from pathlib import Path
-# import re
-# from openai import OpenAI
-# from dotenv import load_dotenv
-# import pygame
-# import time
-
-# load_dotenv()  # take environment variables from .env
-
-
-# # Load text and grab the first Japanese sentence (ending with 。！？)
-# txt = Path("content/raw/sample-writing-cafune-1.txt").read_text(encoding="utf-8")
-# first_sentence = re.split(r"(?<=[。！？!?])\s*", txt.strip(), maxsplit=1)[0]
-
-# client = OpenAI()  # uses OPENAI_API_KEY
-
-# out_path = Path("content/raw/cafune-first-sentence.mp3")
-# text_out_path = Path("content/raw/cafune-first-sentence.txt")
-# text_out_path.write_text(first_sentence, encoding="utf-8")
-# with client.audio.speech.with_streaming_response.create(
-#     model="gpt-4o-mini-tts",      # latest high-quality TTS
-#     voice="coral",                # pick any listed voice
-#     input=first_sentence,
-#     instructions="自然な日本語で、落ち着いたトーンで話してください。",
-#     response_format="mp3",
-# ) as resp:
-#     resp.stream_to_file(out_path)
-
-# print(f"Wrote {out_path}")
-
-# # Play the generated audio
-
-# pygame.mixer.init()
-# pygame.mixer.music.load("example.mp3")
-# pygame.mixer.music.play()
-
-# # Keep the program alive while the music plays
-# while pygame.mixer.music.get_busy():
-#     time.sleep(0.1)
-

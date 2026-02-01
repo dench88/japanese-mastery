@@ -3,58 +3,194 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <title>JP Drill – v0</title>
+    <title>Japanese Mastery – v0</title>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <style>
       body {
         font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
           sans-serif;
-        max-width: 600px;
-        margin: 2rem auto;
-        padding: 0 1rem;
+        margin: 0;
+        padding: 0;
       }
-      textarea {
-        width: 100%;
-        font-size: 1rem;
+
+      .page {
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 1rem;
       }
+
+      h1 {
+        margin-top: 0;
+      }
+
+      .layout {
+        display: flex;
+        gap: 1rem;
+        margin-top: 1rem;
+      }
+
+      .left-panel,
+      .right-panel {
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        padding: 0.75rem;
+        box-sizing: border-box;
+      }
+
+      .left-panel {
+        flex: 1.1;
+        max-height: 80vh;
+        overflow-y: auto;
+        background: #fafafa;
+        white-space: pre-wrap;
+        line-height: 1.6;
+      }
+
+      .right-panel {
+        flex: 1;
+        max-height: 80vh;
+        display: flex;
+        flex-direction: column;
+      }
+
+      .sentence-box {
+        border: 1px solid #eee;
+        border-radius: 4px;
+        padding: 0.75rem;
+        min-height: 4rem;
+        background: #fdfdfd;
+        white-space: pre-wrap;
+        line-height: 1.8;
+        font-size: 1.1rem;
+      }
+
+      .controls {
+        margin-top: 0.75rem;
+        display: flex;
+        gap: 0.5rem;
+        flex-wrap: wrap;
+      }
+
       button {
-        padding: 0.5rem 1rem;
-        margin-top: 0.5rem;
-        font-size: 1rem;
+        padding: 0.5rem 0.9rem;
+        font-size: 0.95rem;
         cursor: pointer;
       }
+
       #status {
         margin-top: 0.5rem;
-        font-size: 0.9rem;
+        font-size: 0.85rem;
         color: #555;
+      }
+
+      audio {
+        margin-top: 0.75rem;
+        width: 100%;
+      }
+
+      @media (max-width: 800px) {
+        .layout {
+          flex-direction: column;
+        }
       }
     </style>
   </head>
   <body>
-    <h1>Japanese Sentence TTS – v0</h1>
+    <div class="page">
+      <h1>Japanese Sentence TTS – v0</h1>
+      <p>
+        Left: full text from <code>sample-writing-cafune-1.txt</code>. Right:
+        current sentence + controls.
+      </p>
 
-    <p>Type or paste a Japanese sentence, then hit “Speak”.</p>
+      <div class="layout">
+        <!-- LEFT: full text -->
+        <div class="left-panel" id="full-text">
+          Loading text...
+        </div>
 
-    <textarea id="text" rows="4">
-今日はとてもいい天気ですね。</textarea
-    >
-    <br />
-    <button id="speak">Speak</button>
+        <!-- RIGHT: sentence + controls -->
+        <div class="right-panel">
+          <h2>Current Sentence</h2>
+          <div id="sentence-meta" style="font-size: 0.85rem; color: #666">
+            Sentence <span id="sentence-index">–</span> of
+            <span id="sentence-total">–</span>
+          </div>
+          <div id="current-sentence" class="sentence-box">
+            Loading sentence...
+          </div>
 
-    <div id="status"></div>
+          <div class="controls">
+            <button id="speak-sentence">Speak Sentence</button>
+            <button id="next-sentence">Next Sentence</button>
+          </div>
 
-    <audio id="player" controls style="margin-top: 1rem; width: 100%;"></audio>
+          <div id="status"></div>
+
+          <audio id="player" controls></audio>
+        </div>
+      </div>
+    </div>
 
     <script>
-      const speakBtn = document.getElementById("speak");
-      const textEl = document.getElementById("text");
+      const fullTextEl = document.getElementById("full-text");
+      const currentSentenceEl = document.getElementById("current-sentence");
+      const sentenceIndexEl = document.getElementById("sentence-index");
+      const sentenceTotalEl = document.getElementById("sentence-total");
       const statusEl = document.getElementById("status");
       const player = document.getElementById("player");
 
-      speakBtn.onclick = async () => {
-        const text = textEl.value.trim();
-        if (!text) {
-          alert("Please enter some text.");
+      const speakBtn = document.getElementById("speak-sentence");
+      const nextBtn = document.getElementById("next-sentence");
+
+      let currentIndex = 0;
+      let currentSentence = "";
+      let totalSentences = 0;
+
+      async function loadBook() {
+        try {
+          const res = await fetch("/api/book");
+          if (!res.ok) {
+            fullTextEl.textContent = "Error loading text.";
+            return;
+          }
+          const data = await res.json();
+          fullTextEl.textContent = data.text;
+        } catch (err) {
+          console.error(err);
+          fullTextEl.textContent = "Error loading text.";
+        }
+      }
+
+      async function loadSentence(index) {
+        try {
+          const res = await fetch(`/api/sentence/${index}`);
+          if (!res.ok) {
+            if (res.status === 404) {
+              statusEl.textContent = "No more sentences.";
+            } else {
+              statusEl.textContent = "Error loading sentence.";
+            }
+            return;
+          }
+          const data = await res.json();
+          currentIndex = data.index;
+          currentSentence = data.sentence;
+          totalSentences = data.total;
+
+          currentSentenceEl.textContent = currentSentence;
+          sentenceIndexEl.textContent = currentIndex + 1; // 1-based for humans
+          sentenceTotalEl.textContent = totalSentences;
+          statusEl.textContent = "";
+        } catch (err) {
+          console.error(err);
+          statusEl.textContent = "Error loading sentence.";
+        }
+      }
+
+      async function speakCurrentSentence() {
+        if (!currentSentence) {
+          statusEl.textContent = "No sentence loaded.";
           return;
         }
 
@@ -68,13 +204,13 @@
               "Content-Type": "application/json",
             },
             body: JSON.stringify({
-              text,
-              voice: "coral", // match backend default or change here
+              text: currentSentence,
+              voice: "coral",
             }),
           });
 
           if (!res.ok) {
-            statusEl.textContent = "Error from server.";
+            statusEl.textContent = "Error from TTS server.";
             speakBtn.disabled = false;
             return;
           }
@@ -90,7 +226,20 @@
         } finally {
           speakBtn.disabled = false;
         }
+      }
+
+      speakBtn.onclick = speakCurrentSentence;
+
+      nextBtn.onclick = async () => {
+        statusEl.textContent = "";
+        await loadSentence(currentIndex + 1);
       };
+
+      // Initial load
+      (async () => {
+        await loadBook();
+        await loadSentence(0);
+      })();
     </script>
   </body>
 </html>
