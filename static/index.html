@@ -122,6 +122,7 @@
 
           <div class="controls">
             <button id="speak-sentence">Speak Sentence</button>
+            <button id="prev-sentence">Previous Sentence</button>
             <button id="next-sentence">Next Sentence</button>
           </div>
 
@@ -141,6 +142,7 @@
       const player = document.getElementById("player");
 
       const speakBtn = document.getElementById("speak-sentence");
+      const prevBtn = document.getElementById("prev-sentence");
       const nextBtn = document.getElementById("next-sentence");
 
       let currentIndex = 0;
@@ -205,7 +207,8 @@
             },
             body: JSON.stringify({
               text: currentSentence,
-              voice: "alloy",
+              voice: "nova",
+              model: "gpt-4o-mini-tts",
             }),
           });
 
@@ -239,6 +242,15 @@
       }
 
       speakBtn.onclick = speakCurrentSentence;
+
+      prevBtn.onclick = async () => {
+        statusEl.textContent = "";
+        if (currentIndex <= 0) {
+          statusEl.textContent = "Already at the first sentence.";
+          return;
+        }
+        await loadSentence(currentIndex - 1);
+      };
 
       nextBtn.onclick = async () => {
         statusEl.textContent = "";
