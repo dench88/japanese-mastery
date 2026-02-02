@@ -38,16 +38,17 @@
       }
 
       .left-panel {
-        flex: 1.1;
+        flex: 1;
         max-height: 80vh;
         overflow-y: auto;
         background: #fafafa;
         white-space: pre-wrap;
         line-height: 1.6;
+        font-size: 0.9rem;
       }
 
       .right-panel {
-        flex: 1;
+        flex: 2;
         max-height: 80vh;
         display: flex;
         flex-direction: column;
@@ -111,19 +112,18 @@
 
         <!-- RIGHT: sentence + controls -->
         <div class="right-panel">
-          <h2>Current Sentence</h2>
-          <div id="sentence-meta" style="font-size: 0.85rem; color: #666">
-            Sentence <span id="sentence-index">–</span> of
-            <span id="sentence-total">–</span>
-          </div>
-          <div id="current-sentence" class="sentence-box">
-            Loading sentence...
-          </div>
-
+          <!-- <h2>Current Sentence</h2> -->
           <div class="controls">
             <button id="speak-sentence">Speak Sentence</button>
             <button id="prev-sentence">Previous Sentence</button>
             <button id="next-sentence">Next Sentence</button>
+          </div>
+          <div id="sentence-meta" style="font-size: 0.85rem; color: #666">
+            Sentence <span id="sentence-index">-</span> of
+            <span id="sentence-total">-</span>
+          </div>
+          <div id="current-sentence" class="sentence-box">
+            Loading sentence...
           </div>
 
           <div id="status"></div>
