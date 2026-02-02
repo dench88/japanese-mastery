@@ -1,4 +1,3 @@
-# app/main.py
 from pathlib import Path
 import re
 import os
@@ -14,17 +13,13 @@ from openai import OpenAI
 # --- paths & env ---
 ROOT_DIR = Path(__file__).resolve().parents[1]
 ENV_PATH = ROOT_DIR / ".env"
-load_dotenv(ENV_PATH)  # harmless if you prefer setting env manually
-
-# OpenAI client - relies on OPENAI_API_KEY being in environment
-# client = OpenAI()
+# Load env from repo root so uvicorn can be started anywhere
+load_dotenv(ENV_PATH)
 
 # --- load and split book text ---
 BOOK_PATH = ROOT_DIR / "content" / "raw" / "sample-writing-cafune-1.txt"
 BOOK_TEXT = BOOK_PATH.read_text(encoding="utf-8")
-
-# Split on Japanese sentence-ending punctuation: 。！？ plus ascii !?
-SENTENCE_PATTERN = re.compile(r"(?<=[。！？!?])\s*")
+SENTENCE_PATTERN = re.compile(r"(?<=[。！？!?])\s*")  # Japanese sentence split
 SENTENCES = [s for s in SENTENCE_PATTERN.split(BOOK_TEXT.strip()) if s]
 
 app = FastAPI()
@@ -35,7 +30,7 @@ app.mount("/static", StaticFiles(directory=ROOT_DIR / "static"), name="static")
 
 class TTSRequest(BaseModel):
     text: str
-    voice: str | None = "coral"
+    voice: str | None = "alloy"
 
 
 @app.get("/")
@@ -64,12 +59,25 @@ async def get_sentence(index: int):
 
 @app.post("/api/tts")
 async def tts(req: TTSRequest):
-    client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise HTTPException(
+            status_code=500,
+            detail="OPENAI_API_KEY not found in environment inside app process.",
+        )
 
-    audio_bytes = client.audio.speech.create(
-        model="gpt-4o-mini-tts",
-        voice=req.voice,
-        input=req.text,
-        response_format="mp3",
-    )
-    return Response(content=audio_bytes, media_type="audio/mpeg")
+    client = OpenAI(api_key=api_key)
+
+    try:
+        speech = client.audio.speech.create(
+            model="gpt-4o-mini-tts",
+            voice=req.voice or "alloy",
+            input=req.text,
+            response_format="mp3",
+        )
+        audio_bytes = speech.read()  # consume stream into bytes
+        return Response(content=audio_bytes, media_type="audio/mpeg")
+    except Exception as e:
+        # This will show up both in terminal and (via frontend) in the UI
+        print("TTS error:", repr(e))
+        raise HTTPException(status_code=500, detail=str(e))

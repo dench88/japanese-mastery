@@ -205,23 +205,33 @@
             },
             body: JSON.stringify({
               text: currentSentence,
-              voice: "coral",
+              voice: "alloy",
             }),
           });
 
+          console.log("TTS HTTP status:", res.status);
+
           if (!res.ok) {
-            statusEl.textContent = "Error from TTS server.";
-            speakBtn.disabled = false;
+            const txt = await res.text().catch(() => "");
+            console.error("TTS server error body:", txt);
+            statusEl.textContent = "Error from TTS server: " + txt;
             return;
           }
 
           const blob = await res.blob();
+          console.log("TTS blob size:", blob.size);
+
           const url = URL.createObjectURL(blob);
           player.src = url;
-          await player.play();
-          statusEl.textContent = "Playing.";
+          try {
+            await player.play();
+            statusEl.textContent = "Playing.";
+          } catch (err) {
+            console.error("Audio play error:", err);
+            statusEl.textContent = "Audio generated but could not be played.";
+          }
         } catch (err) {
-          console.error(err);
+          console.error("Fetch / TTS error:", err);
           statusEl.textContent = "Error generating or playing audio.";
         } finally {
           speakBtn.disabled = false;
