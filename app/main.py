@@ -54,7 +54,89 @@ class AnalyzeRequest(BaseModel):
 
 
 class AnalyzeResponse(BaseModel):
+    reading_hiragana: str | None = None
     items: list[dict]
+
+
+class DeepDiveRequest(BaseModel):
+    sentence: str
+    item: dict
+
+
+class DeepDiveResponse(BaseModel):
+    explanation: str
+    examples: list[dict]
+
+
+# --- shared analysis helper (reading + hard items) ---
+def analyze_sentence_internal(sentence: str):
+    normalized_text = sentence.strip()
+    key_hash = hashlib.sha256(normalized_text.encode("utf-8")).hexdigest()
+    cache_path = ANALYSIS_CACHE_DIR / f"{key_hash}.json"
+
+    if cache_path.exists():
+        try:
+            cached = json.loads(cache_path.read_text(encoding="utf-8"))
+            reading = cached.get("reading_hiragana")
+            items = cached.get("items", [])
+            if reading is not None and isinstance(items, list):
+                return reading, items
+        except Exception:
+            pass  # fall through to fresh call
+
+    prompt = (
+        "You are a Japanese language coach for advanced learners (JLPT N1+). Given ONE Japanese sentence, do two things: "
+        "1) Convert the entire sentence into hiragana (no romaji), preserving punctuation; leave katakana loanwords as katakana. "
+        "2) List the 3 most difficult items (word or grammar) for an N1+ learner. Ignore anything below N2 unless nothing harder exists. If nothing suitable, return an empty list. "
+        "Respond ONLY with JSON matching exactly this schema (all explanations in Japanese, no English words):\n"
+        '{ "reading_hiragana": "<sentence rendered fully in hiragana>", '
+        '"items": [ { "type": "word" | "grammar", "surface": "<exact span from the sentence>", '
+        '"base_form": "<dictionary form or grammar label>", "difficulty": 1, '
+        '"hint_ja": "<short explanation in Japanese>", "reason": "<why this is difficult (Japanese)>" } ] }'
+    )
+
+    reading = None
+    items: list[dict] = []
+
+    try:
+        chat = client.chat.completions.create(
+            model="gpt-4o",
+            temperature=0.2,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": "Return ONLY valid JSON."},
+                {"role": "user", "content": f"{prompt}\nSentence: {normalized_text}"},
+            ],
+        )
+        raw = chat.choices[0].message.content or "{}"
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            cleaned = raw.strip()
+            if cleaned.startswith("```"):
+                cleaned = cleaned.strip("`")
+                cleaned = cleaned.split("\n", 1)[-1]
+            data = json.loads(cleaned)
+        items = data.get("items", [])
+        if not isinstance(items, list):
+            items = []
+        reading = data.get("reading_hiragana")
+        try:
+            cache_path.write_text(
+                json.dumps(
+                    {"reading_hiragana": reading, "items": items},
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+        except Exception as e:
+            print("Analyze cache write error:", repr(e))
+    except Exception as e:
+        print("Analyze error:", repr(e))
+        reading = None
+        items = []
+
+    return reading, items
 
 
 @app.get("/")
@@ -116,64 +198,56 @@ async def tts(req: TTSRequest):
 
 @app.post("/api/analyze_sentence", response_model=AnalyzeResponse)
 async def analyze_sentence(req: AnalyzeRequest):
-    normalized_text = req.text.strip()
-    # cache key only depends on sentence text (analysis is voice/speed agnostic)
-    key_hash = hashlib.sha256(normalized_text.encode("utf-8")).hexdigest()
-    cache_path = ANALYSIS_CACHE_DIR / f"{key_hash}.json"
+    reading, items = analyze_sentence_internal(req.text)
+    return {"reading_hiragana": reading, "items": items}
 
-    if cache_path.exists():
-        try:
-            cached = json.loads(cache_path.read_text(encoding="utf-8"))
-            items = cached.get("items", [])
-            if isinstance(items, list):
-                return {"items": items}
-        except Exception:
-            # fall through to fresh call on corrupt cache
-            pass
+
+@app.post("/api/reading_sentence")
+async def reading_sentence(req: AnalyzeRequest):
+    reading, _ = analyze_sentence_internal(req.text)
+    return {"reading_hiragana": reading}
+
+
+@app.post("/api/hard_items")
+async def hard_items(req: AnalyzeRequest):
+    _, items = analyze_sentence_internal(req.text)
+    return {"items": items}
+
+
+@app.post("/api/deep_dive", response_model=DeepDiveResponse)
+async def deep_dive(req: DeepDiveRequest):
+    item = req.item or {}
+    surface = item.get("surface") or ""
+    base_form = item.get("base_form") or surface
+    item_type = item.get("type") or "word"
 
     prompt = (
-        "You are a Japanese language coach. Given ONE Japanese sentence, list the 3 most difficult items "
-        "(word or grammar) for a JLPT N3–N2 learner. Ignore basic N5–N4 material unless nothing harder exists. "
-        "Respond ONLY with JSON matching exactly this schema:\n"
-        '{ "items": [ { "type": "word" | "grammar", "surface": "<exact span from the sentence>", '
-        '"base_form": "<dictionary form or grammar label>", "difficulty": 1, '
-        '"english_hint": "<short explanation in English>", "reason": "<why this is difficult>" } ] }'
+        "Given a Japanese sentence and a target item (word or grammar), provide a concise deep dive for an advanced learner (JLPT N1+). "
+        "Use JAPANESE ONLY in all fields. Do NOT include English. "
+        'Return ONLY JSON with keys: explanation (short paragraph, Japanese only), examples (array of 2 objects with keys "jp" (Japanese sentence) and "en" (leave empty string if needed)). '
+        "Keep examples natural and highlight the target usage.\n"
+        f"Sentence: {req.sentence}\n"
+        f"Target item: type={item_type}, surface={surface}, base_form={base_form}"
     )
 
     try:
         chat = client.chat.completions.create(
             model="gpt-4o",
-            temperature=0.2,
+            temperature=0.3,
             response_format={"type": "json_object"},
             messages=[
-                {"role": "system", "content": "Return ONLY valid JSON."},
-                {"role": "user", "content": f"{prompt}\nSentence: {normalized_text}"},
+                {"role": "system", "content": "Return ONLY valid JSON. Use Japanese only; no English."},
+                {"role": "user", "content": prompt},
             ],
         )
         raw = chat.choices[0].message.content or "{}"
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
-            # handle if model wrapped in code fences
-            cleaned = raw.strip()
-            if cleaned.startswith("```"):
-                cleaned = cleaned.strip("`")
-                cleaned = cleaned.split("\n", 1)[-1]
-            data = json.loads(cleaned)
-        items = data.get("items", [])
-        if not isinstance(items, list):
-            items = []
-        # cache the successful response
-        try:
-            cache_path.write_text(json.dumps({"items": items}, ensure_ascii=False), encoding="utf-8")
-        except Exception as e:
-            print("Analyze cache write error:", repr(e))
+        data = json.loads(raw)
+        explanation = data.get("explanation", "")
+        examples = data.get("examples", [])
+        if not isinstance(examples, list):
+            examples = []
     except Exception as e:
-        print("Analyze error:", repr(e))
-        items = []
+        print("Deep dive error:", repr(e))
+        raise HTTPException(status_code=500, detail="Deep dive failed.")
 
-    return {"items": items}
-
-
-
-
+    return {"explanation": explanation, "examples": examples[:2]}

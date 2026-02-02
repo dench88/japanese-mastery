@@ -1,9 +1,9 @@
-<!-- static/index.html -->
+﻿<!-- static/index.html -->
 <!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <title>Japanese Mastery – v0</title>
+    <title>日本語マスター v0</title>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <style>
       body {
@@ -116,7 +116,7 @@
   </head>
   <body>
     <div class="page">
-      <h1>Japanese Mastery v0</h1>
+      <h1>日本語マスター v0</h1>
       <!-- <p>
         Left: full text from <code>sample-writing-cafune-1.txt</code>. Right:
         current sentence + controls.
@@ -132,23 +132,26 @@
         <div class="right-panel">
           <!-- <h2>Current Sentence</h2> -->
           <div class="controls">
-            <button id="speak-sentence">Speak Sentence</button>
-            <button id="prev-sentence">Previous Sentence</button>
-            <button id="next-sentence">Next Sentence</button>
+            <button id="speak-sentence">文を再生</button>
+            <button id="vocab-button">語彙ビルダー</button>
+            <button id="toggle-hiragana">ひらがな表示</button>
+            <button id="prev-sentence">前の文</button>
+            <button id="next-sentence">次の文</button>
           </div>
           <div id="sentence-meta" style="font-size: 0.85rem; color: #666">
-            Sentence <span id="sentence-index">-</span> of
-            <span id="sentence-total">-</span>
+            文 <span id="sentence-index">-</span> / <span id="sentence-total">-</span>
           </div>
           <div id="current-sentence" class="sentence-box">
             Loading sentence...
           </div>
+          <div id="hiragana-sentence" style="margin-top: 0.35rem; color: #666; font-size: 0.95rem;"></div>
 
           <div id="status"></div>
 
           <audio id="player" controls></audio>
 
           <div id="hardest-items" class="hard-block"></div>
+          <div id="deep-dive" class="deep-block"></div>
         </div>
       </div>
     </div>
@@ -156,11 +159,15 @@
     <script>
       const fullTextEl = document.getElementById("full-text");
       const currentSentenceEl = document.getElementById("current-sentence");
+      const hiraganaEl = document.getElementById("hiragana-sentence");
       const sentenceIndexEl = document.getElementById("sentence-index");
       const sentenceTotalEl = document.getElementById("sentence-total");
       const statusEl = document.getElementById("status");
       const player = document.getElementById("player");
       const hardestEl = document.getElementById("hardest-items");
+      const deepDiveEl = document.getElementById("deep-dive");
+      const toggleHiraBtn = document.getElementById("toggle-hiragana");
+      const vocabBtn = document.getElementById("vocab-button");
 
       const speakBtn = document.getElementById("speak-sentence");
       const prevBtn = document.getElementById("prev-sentence");
@@ -170,6 +177,9 @@
       let currentSentence = "";
       let totalSentences = 0;
       let fullTextRaw = "";
+      let showHiragana = false;
+      let currentItems = [];
+      let currentReading = "";
 
       async function loadBook() {
         try {
@@ -204,11 +214,13 @@
           totalSentences = data.total;
 
           currentSentenceEl.textContent = currentSentence;
+          hiraganaEl.textContent = "";
+          currentReading = "";
+          hiraganaEl.style.display = showHiragana ? "block" : "none";
           sentenceIndexEl.textContent = currentIndex + 1; // 1-based for humans
           sentenceTotalEl.textContent = totalSentences;
           statusEl.textContent = "";
           renderFullTextHighlight(currentSentence);
-          fetchHardItems(currentSentence);
         } catch (err) {
           console.error(err);
           statusEl.textContent = "Error loading sentence.";
@@ -268,6 +280,19 @@
 
       speakBtn.onclick = speakCurrentSentence;
 
+      toggleHiraBtn.onclick = () => {
+        showHiragana = !showHiragana;
+        hiraganaEl.style.display = showHiragana ? "block" : "none";
+        if (showHiragana && !currentReading) {
+          fetchReading(currentSentence);
+        }
+        toggleHiraBtn.textContent = showHiragana ? "ひらがな非表示" : "ひらがな表示";
+      };
+
+      vocabBtn.onclick = async () => {
+        await fetchHardItems(currentSentence);
+      };
+
       prevBtn.onclick = async () => {
         statusEl.textContent = "";
         if (currentIndex <= 0) {
@@ -282,10 +307,46 @@
         await loadSentence(currentIndex + 1);
       };
 
+      hardestEl.addEventListener("click", async (e) => {
+        const btn = e.target;
+        if (!btn.classList.contains("deep-btn")) return;
+        const idx = parseInt(btn.dataset.idx, 10);
+        if (Number.isNaN(idx) || !currentItems[idx]) return;
+        await fetchDeepDive(currentItems[idx]);
+      });
+
+      async function fetchDeepDive(item) {
+        deepDiveEl.innerHTML = "読み込み中…";
+        try {
+          const res = await fetch("/api/deep_dive", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ sentence: currentSentence, item }),
+          });
+          if (!res.ok) {
+            deepDiveEl.textContent = "取得エラー";
+            return;
+          }
+          const data = await res.json();
+          const explanation = data.explanation || "説明なし";
+          const examples = Array.isArray(data.examples) ? data.examples.slice(0, 2) : [];
+          const examplesHtml = examples
+            .map(
+              (ex) =>
+                `<div class="deep-example"><div>${ex.jp || ""}</div><div style="color:#555;">${ex.en || ""}</div></div>`
+            )
+            .join("");
+          deepDiveEl.innerHTML = `<div class="deep-title">詳しい解説</div><div class="deep-expl">${explanation}</div>${examplesHtml}`;
+        } catch (err) {
+          console.error("Deep dive fetch error:", err);
+          deepDiveEl.textContent = "取得エラー";
+        }
+      }
+
       async function fetchHardItems(sentence) {
         hardestEl.textContent = "";
         try {
-          const res = await fetch("/api/analyze_sentence", {
+          const res = await fetch("/api/hard_items", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ text: sentence }),
@@ -298,17 +359,43 @@
           const items = (data.items || []).slice(0, 3);
           if (!items.length) {
             hardestEl.textContent = "";
+            currentItems = [];
             return;
           }
-          hardestEl.innerHTML = items
-            .map(
-              (i) =>
-                `<div class="hard-item"><strong>${i.surface}</strong> — ${i.english_hint || "no hint"}</div>`
-            )
-            .join("");
+          currentItems = items;
+          hardestEl.innerHTML =
+            `<div class="hard-item" style="font-weight:600;">語彙ビルダー</div>` +
+            items
+              .map(
+                (i, idx) =>
+                  `<div class="hard-item"><strong>${i.surface}</strong> — ${i.hint_ja || i.english_hint || "説明なし"} <button class="deep-btn" data-idx="${idx}">詳しく</button></div>`
+              )
+              .join("");
+          deepDiveEl.innerHTML = "";
         } catch (err) {
           console.error("Analyze fetch error:", err);
           hardestEl.textContent = "";
+          deepDiveEl.textContent = "";
+        }
+      }
+
+      async function fetchReading(sentence) {
+        if (!sentence) return;
+        try {
+          const res = await fetch("/api/reading_sentence", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text: sentence }),
+          });
+          if (!res.ok) return;
+          const data = await res.json();
+          if (data.reading_hiragana) {
+            currentReading = data.reading_hiragana;
+            hiraganaEl.textContent = currentReading;
+            hiraganaEl.style.display = showHiragana ? "block" : "none";
+          }
+        } catch (err) {
+          console.error("Reading fetch error:", err);
         }
       }
 
@@ -347,3 +434,11 @@
     </script>
   </body>
 </html>
+
+
+
+
+
+
+
+
