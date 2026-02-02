@@ -45,6 +45,7 @@
         white-space: pre-wrap;
         line-height: 1.6;
         font-size: 0.9rem;
+        color: #888;
       }
 
       .right-panel {
@@ -53,12 +54,16 @@
         display: flex;
         flex-direction: column;
       }
+      .current-highlight {
+        color: #111;
+        font-weight: 600;
+      }
 
       .sentence-box {
         border: 1px solid #eee;
         border-radius: 4px;
         padding: 0.75rem;
-        min-height: 4rem;
+        min-height: 0;
         background: #fdfdfd;
         white-space: pre-wrap;
         line-height: 1.8;
@@ -76,6 +81,14 @@
         padding: 0.5rem 0.9rem;
         font-size: 0.95rem;
         cursor: pointer;
+        border: 1px solid #ccc;
+        background: #f7f7f7;
+      }
+
+      #speak-sentence {
+        background: #d9ebff;
+        border-color: #9cc5f7;
+        color: #0b3c7d;
       }
 
       #status {
@@ -89,6 +102,11 @@
         width: 100%;
       }
 
+      .hard-item {
+        margin-top: 0.5em;
+        line-height: 1.4;
+      }
+
       @media (max-width: 800px) {
         .layout {
           flex-direction: column;
@@ -98,11 +116,11 @@
   </head>
   <body>
     <div class="page">
-      <h1>Japanese Sentence TTS – v0</h1>
-      <p>
+      <h1>Japanese Mastery v0</h1>
+      <!-- <p>
         Left: full text from <code>sample-writing-cafune-1.txt</code>. Right:
         current sentence + controls.
-      </p>
+      </p> -->
 
       <div class="layout">
         <!-- LEFT: full text -->
@@ -129,6 +147,8 @@
           <div id="status"></div>
 
           <audio id="player" controls></audio>
+
+          <div id="hardest-items" class="hard-block"></div>
         </div>
       </div>
     </div>
@@ -140,6 +160,7 @@
       const sentenceTotalEl = document.getElementById("sentence-total");
       const statusEl = document.getElementById("status");
       const player = document.getElementById("player");
+      const hardestEl = document.getElementById("hardest-items");
 
       const speakBtn = document.getElementById("speak-sentence");
       const prevBtn = document.getElementById("prev-sentence");
@@ -148,6 +169,7 @@
       let currentIndex = 0;
       let currentSentence = "";
       let totalSentences = 0;
+      let fullTextRaw = "";
 
       async function loadBook() {
         try {
@@ -157,7 +179,8 @@
             return;
           }
           const data = await res.json();
-          fullTextEl.textContent = data.text;
+          fullTextRaw = data.text;
+          renderFullTextHighlight("");
         } catch (err) {
           console.error(err);
           fullTextEl.textContent = "Error loading text.";
@@ -184,6 +207,8 @@
           sentenceIndexEl.textContent = currentIndex + 1; // 1-based for humans
           sentenceTotalEl.textContent = totalSentences;
           statusEl.textContent = "";
+          renderFullTextHighlight(currentSentence);
+          fetchHardItems(currentSentence);
         } catch (err) {
           console.error(err);
           statusEl.textContent = "Error loading sentence.";
@@ -256,6 +281,63 @@
         statusEl.textContent = "";
         await loadSentence(currentIndex + 1);
       };
+
+      async function fetchHardItems(sentence) {
+        hardestEl.textContent = "";
+        try {
+          const res = await fetch("/api/analyze_sentence", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text: sentence }),
+          });
+          if (!res.ok) {
+            hardestEl.textContent = "";
+            return;
+          }
+          const data = await res.json();
+          const items = (data.items || []).slice(0, 3);
+          if (!items.length) {
+            hardestEl.textContent = "";
+            return;
+          }
+          hardestEl.innerHTML = items
+            .map(
+              (i) =>
+                `<div class="hard-item"><strong>${i.surface}</strong> — ${i.english_hint || "no hint"}</div>`
+            )
+            .join("");
+        } catch (err) {
+          console.error("Analyze fetch error:", err);
+          hardestEl.textContent = "";
+        }
+      }
+
+      function escapeHtml(str) {
+        return str
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;");
+      }
+
+      function escapeRegex(str) {
+        return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      }
+
+      function renderFullTextHighlight(sentence) {
+        if (!fullTextRaw) return;
+        const escapedFull = escapeHtml(fullTextRaw);
+        if (!sentence) {
+          fullTextEl.innerHTML = escapedFull;
+          return;
+        }
+        const escapedSentence = escapeHtml(sentence);
+        const regex = new RegExp(escapeRegex(escapedSentence));
+        const highlighted = escapedFull.replace(
+          regex,
+          `<span class="current-highlight">${escapedSentence}</span>`
+        );
+        fullTextEl.innerHTML = highlighted;
+      }
 
       // Initial load
       (async () => {
