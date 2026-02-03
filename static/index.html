@@ -311,22 +311,30 @@
 
       toggleHiraBtn.onclick = () => {
         showHiragana = !showHiragana;
-        hiraganaEl.style.display = showHiragana ? "block" : "none";
-        if (showHiragana && !currentReading) {
-          fetchReading(currentSentence);
-        }
         toggleHiraBtn.textContent = "HG";
         setActive(toggleHiraBtn, showHiragana);
+
+        if (showHiragana) {
+          if (currentReading) {
+            hiraganaEl.textContent = currentReading;
+            hiraganaEl.style.display = "block";
+          } else {
+            hiraganaEl.style.display = "block";
+            fetchReading(currentSentence);
+          }
+        } else {
+          hiraganaEl.style.display = "none";
+        }
       };
 
       toggleFgBtn.onclick = async () => {
         showFurigana = !showFurigana;
         toggleFgBtn.textContent = "FG";
+        setActive(toggleFgBtn, showFurigana);
         if (showFurigana && !currentReading) {
           await fetchReading(currentSentence, true); // suppress HG display
         }
         renderSentenceDisplay();
-        setActive(toggleFgBtn, showFurigana);
       };
 
       vocabBtn.onclick = async () => {
