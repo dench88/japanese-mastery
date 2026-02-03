@@ -163,6 +163,18 @@ async def get_sentence(index: int):
     }
 
 
+@app.get("/api/sentences")
+async def get_sentences():
+    """Return all sentences with their indices (for client-side navigation)."""
+    return {
+        "sentences": [
+            {"index": i, "sentence": s}
+            for i, s in enumerate(SENTENCES)
+        ],
+        "total": len(SENTENCES),
+    }
+
+
 @app.post("/api/tts")
 async def tts(req: TTSRequest):
     model = req.model or "gpt-4o-mini-tts"

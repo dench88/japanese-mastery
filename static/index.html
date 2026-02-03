@@ -37,15 +37,36 @@
         box-sizing: border-box;
       }
 
-      .left-panel {
+      .left-stack {
+        display: flex;
+        flex-direction: column;
+        gap: 0.75rem;
         flex: 1;
-        max-height: 80vh;
+      }
+
+      .left-panel {
+        flex: 0 0 33vh; /* about one third of viewport height */
+        max-height: 33vh;
         overflow-y: auto;
         background: #fafafa;
         white-space: pre-wrap;
         line-height: 1.6;
         font-size: 0.9rem;
         color: #888;
+        padding: 0.75rem;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        box-sizing: border-box;
+      }
+
+      .vocab-panel {
+        flex: 1;
+        min-height: 0;
+        background: #f7f9fc;
+        padding: 0.75rem;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        overflow-y: auto;
       }
 
       .right-panel {
@@ -85,7 +106,7 @@
         background: #f7f7f7;
       }
 
-      #speak-sentence {
+      .btn-active {
         background: #d9ebff;
         border-color: #9cc5f7;
         color: #0b3c7d;
@@ -116,16 +137,15 @@
   </head>
   <body>
     <div class="page">
-      <h1>日本語マスター v0</h1>
-      <!-- <p>
-        Left: full text from <code>sample-writing-cafune-1.txt</code>. Right:
-        current sentence + controls.
-      </p> -->
-
       <div class="layout">
         <!-- LEFT: full text -->
-        <div class="left-panel" id="full-text">
-          Loading text...
+        <div class="left-stack">
+          <div class="left-panel" id="full-text">
+            Loading text...
+          </div>
+          <div class="vocab-panel">
+            <div id="hardest-items" class="hard-block"></div>
+          </div>
         </div>
 
         <!-- RIGHT: sentence + controls -->
@@ -133,8 +153,9 @@
           <!-- <h2>Current Sentence</h2> -->
           <div class="controls">
             <button id="speak-sentence">文を再生</button>
-            <button id="vocab-button">語彙ビルダー</button>
-            <button id="toggle-hiragana">ひらがな表示</button>
+            <button id="vocab-button">単語ビルダー</button>
+            <button id="toggle-fg">FG</button>
+            <button id="toggle-hiragana">HG</button>
             <button id="prev-sentence">前の文</button>
             <button id="next-sentence">次の文</button>
           </div>
@@ -150,7 +171,6 @@
 
           <audio id="player" controls></audio>
 
-          <div id="hardest-items" class="hard-block"></div>
           <div id="deep-dive" class="deep-block"></div>
         </div>
       </div>
@@ -167,6 +187,7 @@
       const hardestEl = document.getElementById("hardest-items");
       const deepDiveEl = document.getElementById("deep-dive");
       const toggleHiraBtn = document.getElementById("toggle-hiragana");
+      const toggleFgBtn = document.getElementById("toggle-fg");
       const vocabBtn = document.getElementById("vocab-button");
 
       const speakBtn = document.getElementById("speak-sentence");
@@ -176,24 +197,26 @@
       let currentIndex = 0;
       let currentSentence = "";
       let totalSentences = 0;
-      let fullTextRaw = "";
+      let sentencesData = [];
       let showHiragana = false;
       let currentItems = [];
       let currentReading = "";
+      let showVocab = false;
+      let showFurigana = false;
 
-      async function loadBook() {
+      async function loadSentences() {
         try {
-          const res = await fetch("/api/book");
+          const res = await fetch("/api/sentences");
           if (!res.ok) {
-            fullTextEl.textContent = "Error loading text.";
+            fullTextEl.textContent = "Error loading sentences.";
             return;
           }
           const data = await res.json();
-          fullTextRaw = data.text;
-          renderFullTextHighlight("");
+          sentencesData = data.sentences || [];
+          renderSentenceList();
         } catch (err) {
           console.error(err);
-          fullTextEl.textContent = "Error loading text.";
+          fullTextEl.textContent = "Error loading sentences.";
         }
       }
 
@@ -213,14 +236,20 @@
           currentSentence = data.sentence;
           totalSentences = data.total;
 
-          currentSentenceEl.textContent = currentSentence;
-          hiraganaEl.textContent = "";
-          currentReading = "";
-          hiraganaEl.style.display = showHiragana ? "block" : "none";
-          sentenceIndexEl.textContent = currentIndex + 1; // 1-based for humans
-          sentenceTotalEl.textContent = totalSentences;
-          statusEl.textContent = "";
-          renderFullTextHighlight(currentSentence);
+        currentSentenceEl.textContent = currentSentence;
+        hiraganaEl.textContent = "";
+        currentReading = "";
+        showFurigana = false;
+        toggleFgBtn.textContent = "FG";
+        setActive(toggleFgBtn, false);
+        hiraganaEl.style.display = showHiragana ? "block" : "none";
+        sentenceIndexEl.textContent = currentIndex + 1; // 1-based for humans
+        sentenceTotalEl.textContent = totalSentences;
+        statusEl.textContent = "";
+        renderFullTextHighlight(currentSentence);
+        scrollHighlightIntoView();
+        renderSentenceDisplay();
+        clearVocabPanels();
         } catch (err) {
           console.error(err);
           statusEl.textContent = "Error loading sentence.";
@@ -286,11 +315,31 @@
         if (showHiragana && !currentReading) {
           fetchReading(currentSentence);
         }
-        toggleHiraBtn.textContent = showHiragana ? "ひらがな非表示" : "ひらがな表示";
+        toggleHiraBtn.textContent = "HG";
+        setActive(toggleHiraBtn, showHiragana);
+      };
+
+      toggleFgBtn.onclick = async () => {
+        showFurigana = !showFurigana;
+        toggleFgBtn.textContent = "FG";
+        if (showFurigana && !currentReading) {
+          await fetchReading(currentSentence, true); // suppress HG display
+        }
+        renderSentenceDisplay();
+        setActive(toggleFgBtn, showFurigana);
       };
 
       vocabBtn.onclick = async () => {
+        if (showVocab) {
+          hardestEl.innerHTML = "";
+          deepDiveEl.innerHTML = "";
+          showVocab = false;
+          setActive(vocabBtn, false);
+          return;
+        }
+        showVocab = true;
         await fetchHardItems(currentSentence);
+        setActive(vocabBtn, true);
       };
 
       prevBtn.onclick = async () => {
@@ -371,7 +420,7 @@
                   `<div class="hard-item"><strong>${i.surface}</strong> — ${i.hint_ja || i.english_hint || "説明なし"} <button class="deep-btn" data-idx="${idx}">詳しく</button></div>`
               )
               .join("");
-          deepDiveEl.innerHTML = "";
+         deepDiveEl.innerHTML = "";
         } catch (err) {
           console.error("Analyze fetch error:", err);
           hardestEl.textContent = "";
@@ -379,7 +428,7 @@
         }
       }
 
-      async function fetchReading(sentence) {
+      async function fetchReading(sentence, suppressHiraDisplay = false) {
         if (!sentence) return;
         try {
           const res = await fetch("/api/reading_sentence", {
@@ -391,12 +440,94 @@
           const data = await res.json();
           if (data.reading_hiragana) {
             currentReading = data.reading_hiragana;
-            hiraganaEl.textContent = currentReading;
-            hiraganaEl.style.display = showHiragana ? "block" : "none";
+            if (!suppressHiraDisplay) {
+              hiraganaEl.textContent = currentReading;
+              hiraganaEl.style.display = showHiragana ? "block" : "none";
+            }
+            renderSentenceDisplay();
           }
         } catch (err) {
           console.error("Reading fetch error:", err);
         }
+      }
+
+      function clearVocabPanels() {
+        hardestEl.innerHTML = "";
+        deepDiveEl.innerHTML = "";
+        showVocab = false;
+        setActive(vocabBtn, false);
+      }
+
+      function renderSentenceDisplay() {
+        if (showFurigana && currentReading) {
+          currentSentenceEl.innerHTML = buildRuby(currentSentence, currentReading);
+        } else {
+          currentSentenceEl.textContent = currentSentence;
+        }
+      }
+
+      function setActive(btn, isActive) {
+        if (!btn) return;
+        if (isActive) {
+          btn.classList.add("btn-active");
+        } else {
+          btn.classList.remove("btn-active");
+        }
+      }
+
+      function isKanaOrPunct(ch) {
+        // treat kana plus common Japanese punctuation (including quotes) as anchors
+        return /[ぁ-ゟ゠-ヿー、。！？「」『』（）〔〕［］\s]/.test(ch);
+      }
+
+      function buildRuby(sentence, reading) {
+        let si = 0;
+        let ri = 0;
+        let out = "";
+        const s = sentence;
+        const r = reading;
+
+        const makeChunk = (rb, rt) =>
+          rb.length ? `<ruby><rb>${escapeHtml(rb)}</rb><rt>${escapeHtml(rt)}</rt></ruby>` : "";
+
+        while (si < s.length) {
+          // Plain anchor: kana/punct matches directly
+          if (ri < r.length && isKanaOrPunct(s[si]) && s[si] === r[ri]) {
+            out += escapeHtml(s[si]);
+            si += 1;
+            ri += 1;
+            continue;
+          }
+
+          // Start a chunk at si
+          const start = si;
+
+          // find next anchor in sentence that also appears ahead in reading
+          let anchorPosS = s.length;
+          let anchorPosR = r.length;
+          let tmpSi = si;
+          while (tmpSi < s.length) {
+            const ch = s[tmpSi];
+            if (isKanaOrPunct(ch)) {
+              const idxR = r.indexOf(ch, ri);
+              if (idxR !== -1) {
+                anchorPosS = tmpSi;
+                anchorPosR = idxR;
+                break;
+              }
+            }
+            tmpSi++;
+          }
+
+          const surface = s.slice(start, anchorPosS);
+          const readingChunk = r.slice(ri, anchorPosR);
+
+          out += makeChunk(surface, readingChunk || surface); // fallback to surface if empty
+
+          si = anchorPosS;
+          ri = anchorPosR;
+        }
+        return out;
       }
 
       function escapeHtml(str) {
@@ -411,24 +542,39 @@
       }
 
       function renderFullTextHighlight(sentence) {
-        if (!fullTextRaw) return;
-        const escapedFull = escapeHtml(fullTextRaw);
-        if (!sentence) {
-          fullTextEl.innerHTML = escapedFull;
-          return;
-        }
-        const escapedSentence = escapeHtml(sentence);
-        const regex = new RegExp(escapeRegex(escapedSentence));
-        const highlighted = escapedFull.replace(
-          regex,
-          `<span class="current-highlight">${escapedSentence}</span>`
-        );
-        fullTextEl.innerHTML = highlighted;
+        renderSentenceList(sentence);
       }
+
+      function scrollHighlightIntoView() {
+        const target = fullTextEl.querySelector(".current-highlight");
+        if (!target) return;
+        const container = fullTextEl;
+        const top = target.offsetTop - container.clientHeight / 2 + target.clientHeight / 2;
+        container.scrollTop = Math.max(0, top);
+      }
+
+      function renderSentenceList(highlightSentence = "") {
+        if (!sentencesData.length) return;
+        const html = sentencesData
+          .map((s) => {
+            const isCurrent = highlightSentence && s.sentence === highlightSentence;
+            return `<div class="sentence-row ${isCurrent ? "current-highlight" : ""}" data-idx="${s.index}">${escapeHtml(s.sentence)}</div>`;
+          })
+          .join("");
+        fullTextEl.innerHTML = html;
+      }
+
+      fullTextEl.addEventListener("click", async (e) => {
+        const row = e.target.closest(".sentence-row");
+        if (!row) return;
+        const idx = parseInt(row.dataset.idx, 10);
+        if (Number.isNaN(idx)) return;
+        await loadSentence(idx);
+      });
 
       // Initial load
       (async () => {
-        await loadBook();
+        await loadSentences();
         await loadSentence(0);
       })();
     </script>
