@@ -68,11 +68,22 @@ class DeepDiveResponse(BaseModel):
     examples: list[dict]
 
 
+class ManualBriefRequest(BaseModel):
+    sentence: str
+    surface: str
+
+
+# --- helpers ---
+def sentence_cache_path(sentence: str) -> Path:
+    normalized_text = sentence.strip()
+    key_hash = hashlib.sha256(normalized_text.encode("utf-8")).hexdigest()
+    return ANALYSIS_CACHE_DIR / f"{key_hash}.json"
+
+
 # --- shared analysis helper (reading + hard items) ---
 def analyze_sentence_internal(sentence: str):
     normalized_text = sentence.strip()
-    key_hash = hashlib.sha256(normalized_text.encode("utf-8")).hexdigest()
-    cache_path = ANALYSIS_CACHE_DIR / f"{key_hash}.json"
+    cache_path = sentence_cache_path(normalized_text)
 
     if cache_path.exists():
         try:
@@ -224,6 +235,53 @@ async def reading_sentence(req: AnalyzeRequest):
 async def hard_items(req: AnalyzeRequest):
     _, items = analyze_sentence_internal(req.text)
     return {"items": items}
+
+
+@app.post("/api/hard_item/delete")
+async def delete_hard_item(req: AnalyzeRequest):
+    """Remove a specific item (by surface) from the cached analysis for this sentence."""
+    cache_path = sentence_cache_path(req.text)
+    if not cache_path.exists():
+        return {"removed": False}
+    try:
+        data = json.loads(cache_path.read_text(encoding="utf-8"))
+        items = data.get("items", [])
+        surface = req.dict().get("surface")
+        if not surface:
+            return {"removed": False}
+        new_items = [i for i in items if i.get("surface") != surface]
+        data["items"] = new_items
+        cache_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        return {"removed": True}
+    except Exception as e:
+        print("Delete hard item error:", repr(e))
+        return {"removed": False}
+
+
+@app.post("/api/manual_brief")
+async def manual_brief(req: ManualBriefRequest):
+    """Return a short Japanese hint for a user-selected surface in the sentence."""
+    prompt = (
+        "あなたは日本語上級学習者(JLPT N1+)向けのコーチです。与えられた文中の指定語について、短く要点だけ日本語で解説してください。"
+        'JSONのみで返してください。形式: { "hint_ja": "<短い説明 (日本語)>" }'
+    )
+    try:
+        chat = client.chat.completions.create(
+            model="gpt-4o",
+            temperature=0.2,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": "Return ONLY valid JSON."},
+                {"role": "user", "content": f"{prompt}\n文: {req.sentence}\n語: {req.surface}"},
+            ],
+        )
+        raw = chat.choices[0].message.content or "{}"
+        data = json.loads(raw)
+        hint = data.get("hint_ja") or ""
+        return {"hint_ja": hint}
+    except Exception as e:
+        print("Manual brief error:", repr(e))
+        return {"hint_ja": ""}
 
 
 @app.post("/api/deep_dive", response_model=DeepDiveResponse)

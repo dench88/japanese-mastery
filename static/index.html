@@ -106,6 +106,12 @@
         background: #f7f7f7;
       }
 
+      .mini-btn {
+        padding: 0.25rem 0.5rem;
+        font-size: 0.85rem;
+        margin-left: 0.25rem;
+      }
+
       .btn-active {
         background: #d9ebff;
         border-color: #9cc5f7;
@@ -154,6 +160,7 @@
           <div class="controls">
             <button id="speak-sentence">文を再生</button>
             <button id="vocab-button">単語ビルダー</button>
+            <button id="add-vocab">追加</button>
             <button id="toggle-fg">FG</button>
             <button id="toggle-hiragana">HG</button>
             <button id="prev-sentence">前の文</button>
@@ -189,6 +196,7 @@
       const toggleHiraBtn = document.getElementById("toggle-hiragana");
       const toggleFgBtn = document.getElementById("toggle-fg");
       const vocabBtn = document.getElementById("vocab-button");
+      const addVocabBtn = document.getElementById("add-vocab");
 
       const speakBtn = document.getElementById("speak-sentence");
       const prevBtn = document.getElementById("prev-sentence");
@@ -203,6 +211,7 @@
       let currentReading = "";
       let showVocab = false;
       let showFurigana = false;
+      let currentManualItems = [];
 
       async function loadSentences() {
         try {
@@ -240,8 +249,11 @@
         hiraganaEl.textContent = "";
         currentReading = "";
         showFurigana = false;
+        showHiragana = false;
         toggleFgBtn.textContent = "FG";
         setActive(toggleFgBtn, false);
+        toggleHiraBtn.textContent = "HG";
+        setActive(toggleHiraBtn, false);
         hiraganaEl.style.display = showHiragana ? "block" : "none";
         sentenceIndexEl.textContent = currentIndex + 1; // 1-based for humans
         sentenceTotalEl.textContent = totalSentences;
@@ -346,8 +358,58 @@
           return;
         }
         showVocab = true;
-        await fetchHardItems(currentSentence);
         setActive(vocabBtn, true);
+        await fetchHardItems(currentSentence);
+      };
+
+      addVocabBtn.onclick = async () => {
+        const selection = (window.getSelection && window.getSelection().toString().trim()) || "";
+        if (!selection) {
+          statusEl.textContent = "単語を選択してください。";
+          return;
+        }
+        // ensure panel visible
+        if (!showVocab) {
+          showVocab = true;
+          setActive(vocabBtn, true);
+          hardestEl.innerHTML =
+            `<div class="hard-item" style="font-weight:600;">語彙ビルダー</div>`;
+        }
+        // append placeholder immediately
+        const placeholderId = `man-${Date.now()}`;
+        appendManualItem({
+          id: placeholderId,
+          surface: selection,
+          hint: "読み込み中…",
+          brief: "読み込み中…",
+          examples: [],
+        });
+        try {
+          const res = await fetch("/api/manual_brief", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              sentence: currentSentence,
+              surface: selection,
+            }),
+          });
+          if (!res.ok) throw new Error("deep dive failed");
+          const data = await res.json();
+          replaceManualItem(placeholderId, {
+            surface: selection,
+            hint: data.hint_ja || "説明なし",
+            brief: data.hint_ja || "説明なし",
+            explanation: "", // not fetched yet
+            examples: [],
+          });
+        } catch (err) {
+          console.error("manual vocab error:", err);
+          replaceManualItem(placeholderId, {
+            surface: selection,
+            explanation: "取得に失敗しました",
+            examples: [],
+          });
+        }
       };
 
       prevBtn.onclick = async () => {
@@ -366,10 +428,36 @@
 
       hardestEl.addEventListener("click", async (e) => {
         const btn = e.target;
-        if (!btn.classList.contains("deep-btn")) return;
-        const idx = parseInt(btn.dataset.idx, 10);
-        if (Number.isNaN(idx) || !currentItems[idx]) return;
-        await fetchDeepDive(currentItems[idx]);
+        // deep dive on fetched item
+        if (btn.classList.contains("deep-btn")) {
+          const idx = parseInt(btn.dataset.idx, 10);
+          if (Number.isNaN(idx) || !currentItems[idx]) return;
+          await fetchDeepDive(currentItems[idx]);
+          return;
+        }
+        // delete fetched item
+        if (btn.classList.contains("delete-btn")) {
+          const idx = parseInt(btn.dataset.idx, 10);
+          if (Number.isNaN(idx) || !currentItems[idx]) return;
+          await deleteFetchedItem(currentItems[idx]);
+          return;
+        }
+        // deep dive manual item
+        if (btn.classList.contains("deep-manual")) {
+          const mid = btn.dataset.mid;
+          const m = currentManualItems.find((x) => x.id === mid);
+          if (m) {
+            await fetchManualDeepDive(m);
+          }
+          return;
+        }
+        // delete manual item
+        if (btn.classList.contains("delete-manual")) {
+          const mid = btn.dataset.mid;
+          currentManualItems = currentManualItems.filter((m) => m.id !== mid);
+          renderVocabPanel(currentItems, currentManualItems);
+          return;
+        }
       });
 
       async function fetchDeepDive(item) {
@@ -420,15 +508,8 @@
             return;
           }
           currentItems = items;
-          hardestEl.innerHTML =
-            `<div class="hard-item" style="font-weight:600;">語彙ビルダー</div>` +
-            items
-              .map(
-                (i, idx) =>
-                  `<div class="hard-item"><strong>${i.surface}</strong> — ${i.hint_ja || i.english_hint || "説明なし"} <button class="deep-btn" data-idx="${idx}">詳しく</button></div>`
-              )
-              .join("");
-         deepDiveEl.innerHTML = "";
+          renderVocabPanel(items, currentManualItems);
+          deepDiveEl.innerHTML = "";
         } catch (err) {
           console.error("Analyze fetch error:", err);
           hardestEl.textContent = "";
@@ -464,6 +545,100 @@
         deepDiveEl.innerHTML = "";
         showVocab = false;
         setActive(vocabBtn, false);
+        currentManualItems = [];
+      }
+
+      function renderVocabPanel(fetchedItems, manualItems) {
+        const header = `<div class="hard-item" style="font-weight:600;">語彙ビルダー</div>`;
+        const fetchedHtml = fetchedItems
+          .map(
+            (i, idx) =>
+              `<div class="hard-item"><strong>${i.surface}</strong> — ${i.hint_ja || i.english_hint || "説明なし"} <button class="mini-btn deep-btn" data-idx="${idx}">詳しく</button><button class="mini-btn delete-btn" data-idx="${idx}">削除</button></div>`
+          )
+          .join("");
+        const manualHtml = manualItems
+          .map(
+            (m) =>
+              `<div class="hard-item"><strong>${m.surface}</strong> — ${m.brief || m.hint || m.explanation || "説明なし"} <button class="mini-btn deep-manual" data-mid="${m.id}">詳しく</button><button class="mini-btn delete-manual" data-mid="${m.id}">削除</button></div>`
+          )
+          .join("");
+        hardestEl.innerHTML = header + fetchedHtml + manualHtml;
+      }
+
+      function renderExamples(examples = []) {
+        if (!examples || !examples.length) return "";
+        return (
+          "<div class=\"deep-example\">" +
+          examples
+            .map(
+              (ex) =>
+                `<div>${ex.jp || ""}</div><div style="color:#555;">${ex.en || ""}</div>`
+            )
+            .join("") +
+          "</div>"
+        );
+      }
+
+      function appendManualItem(item) {
+        currentManualItems.push(item);
+        renderVocabPanel(currentItems, currentManualItems);
+      }
+
+      function renderManualDeepDive(item) {
+        const examplesHtml = renderExamples(item.examples);
+        const explanation = item.explanation || item.brief || "説明なし";
+        deepDiveEl.innerHTML = `<div class="deep-title">詳しい解説</div><div class="deep-expl">${explanation}</div>${examplesHtml}`;
+      }
+
+      async function fetchManualDeepDive(item) {
+        deepDiveEl.innerHTML = "読み込み中…";
+        try {
+          const res = await fetch("/api/deep_dive", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ sentence: currentSentence, item: { type: "word", surface: item.surface, base_form: item.surface } }),
+          });
+          if (!res.ok) throw new Error("deep dive failed");
+          const data = await res.json();
+          item.explanation = data.explanation || item.explanation || "説明なし";
+          item.examples = data.examples || item.examples || [];
+          renderManualDeepDive(item);
+        } catch (err) {
+          console.error("manual deep dive error:", err);
+          deepDiveEl.textContent = "Error fetching details.";
+        }
+      }
+
+      function replaceManualItem(id, newData) {
+        currentManualItems = currentManualItems.map((m) =>
+          m.id === id
+            ? {
+                ...m,
+                ...newData,
+                brief: briefText(newData.explanation || newData.hint || ""),
+              }
+            : m
+        );
+        renderVocabPanel(currentItems, currentManualItems);
+      }
+
+      async function deleteFetchedItem(item) {
+        try {
+          await fetch("/api/hard_item/delete", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text: currentSentence, surface: item.surface }),
+          });
+        } catch (err) {
+          console.error("delete fetched item error:", err);
+        }
+        currentItems = currentItems.filter((i) => i.surface !== item.surface);
+        renderVocabPanel(currentItems, currentManualItems);
+      }
+
+      function briefText(text, max = 40) {
+        if (!text) return "説明なし";
+        return text.length > max ? text.slice(0, max) + "…" : text;
       }
 
       function renderSentenceDisplay() {
