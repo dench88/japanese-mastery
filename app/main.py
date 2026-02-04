@@ -22,7 +22,6 @@ SPEED_DEFAULT = float(os.getenv("TTS_SPEED_DEFAULT", "1.1"))
 BOOK_PATH = ROOT_DIR / "content" / "raw" / "sample-writing-cafune-1.txt"
 BOOK_TEXT = BOOK_PATH.read_text(encoding="utf-8")
 SENTENCE_PATTERN = re.compile(r"(?<=[。！？!?])\s*")  # Japanese sentence split
-SENTENCES = [s for s in SENTENCE_PATTERN.split(BOOK_TEXT.strip()) if s]
 
 # --- caches ---
 TTS_CACHE_DIR = ROOT_DIR / "tts_cache"
@@ -42,6 +41,7 @@ app = FastAPI()
 
 # serve static files
 app.mount("/static", StaticFiles(directory=ROOT_DIR / "static"), name="static")
+app.mount("/tts_cache", StaticFiles(directory=TTS_CACHE_DIR), name="tts-cache")
 
 
 class TTSRequest(BaseModel):
@@ -89,6 +89,13 @@ class VocabEntry(BaseModel):
     examples: list[dict] | None = None
 
 
+class TTSExampleRequest(BaseModel):
+    text: str
+    surface: str | None = None
+    voice: str | None = "nova"
+    speed: float | None = None
+
+
 # --- helpers ---
 def sentence_cache_path(sentence: str) -> Path:
     normalized_text = sentence.strip()
@@ -99,6 +106,34 @@ def sentence_cache_path(sentence: str) -> Path:
 def vocab_cache_path(surface: str) -> Path:
     key_hash = hashlib.sha256(surface.strip().encode("utf-8")).hexdigest()
     return VOCAB_CACHE_DIR / f"{key_hash}.json"
+
+
+def tts_filename(text: str, voice: str, speed: float) -> str:
+    key = f"{text}|{voice}|{speed}"
+    key_hash = hashlib.sha256(key.encode("utf-8")).hexdigest()
+    return f"{key_hash}.mp3"
+
+
+def list_sources():
+    raw_dir = ROOT_DIR / "content" / "raw"
+    sources = []
+    for p in raw_dir.iterdir():
+        if p.is_file() and p.suffix.lower() in {".txt", ".md"}:
+            sources.append({"name": p.name, "path": str(p.relative_to(ROOT_DIR))})
+    return sorted(sources, key=lambda x: x["name"])
+
+
+def load_source_text(source_name: str | None) -> str:
+    if source_name:
+        candidate = ROOT_DIR / "content" / "raw" / source_name
+        if candidate.exists() and candidate.is_file():
+            return candidate.read_text(encoding="utf-8")
+    # fallback
+    return BOOK_TEXT
+
+
+def split_sentences(text: str):
+    return [s for s in SENTENCE_PATTERN.split(text.strip()) if s]
 
 
 # --- shared analysis helper (reading + hard items) ---
@@ -177,33 +212,31 @@ async def root():
 
 
 @app.get("/api/book")
-async def get_book():
-    """Return full book text."""
-    return {"text": BOOK_TEXT}
+async def get_book(source: str | None = None):
+    """Return full book text for a given source filename (optional)."""
+    text = load_source_text(source)
+    return {"text": text}
 
 
 @app.get("/api/sentence/{index}")
-async def get_sentence(index: int):
+async def get_sentence(index: int, source: str | None = None):
     """Return the sentence at the given index."""
-    total = len(SENTENCES)
+    text = load_source_text(source)
+    sentences = split_sentences(text)
+    total = len(sentences)
     if index < 0 or index >= total:
         raise HTTPException(status_code=404, detail="No more sentences.")
-    return {
-        "index": index,
-        "sentence": SENTENCES[index],
-        "total": total,
-    }
+    return {"index": index, "sentence": sentences[index], "total": total}
 
 
 @app.get("/api/sentences")
-async def get_sentences():
+async def get_sentences(source: str | None = None):
     """Return all sentences with their indices (for client-side navigation)."""
+    text = load_source_text(source)
+    sentences = split_sentences(text)
     return {
-        "sentences": [
-            {"index": i, "sentence": s}
-            for i, s in enumerate(SENTENCES)
-        ],
-        "total": len(SENTENCES),
+        "sentences": [{"index": i, "sentence": s} for i, s in enumerate(sentences)],
+        "total": len(sentences),
     }
 
 
@@ -503,3 +536,58 @@ async def vocab_list():
     # sort alphabetically by surface for stability
     entries.sort(key=lambda x: x.get("surface", ""))
     return {"entries": entries}
+
+
+@app.post("/api/tts_example")
+async def tts_example(req: TTSExampleRequest):
+    text = req.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text is required")
+    voice = req.voice or "nova"
+    speed = req.speed or SPEED_DEFAULT
+
+    filename = tts_filename(text, voice, speed)
+    cache_path = TTS_CACHE_DIR / filename
+
+    # generate if missing
+    if not cache_path.exists():
+        try:
+            with client.audio.speech.with_streaming_response.create(
+                model="gpt-4o-mini-tts",
+                voice=voice,
+                input=text,
+                speed=speed,
+                response_format="mp3",
+            ) as response:
+                response.stream_to_file(cache_path)
+        except Exception as e:
+            print("TTS example error:", repr(e))
+            raise HTTPException(status_code=500, detail="TTS failed")
+
+    # update vocab cache for surface if provided
+    if req.surface:
+        vpath = vocab_cache_path(req.surface)
+        try:
+            data = {"surface": req.surface, "base_form": req.surface}
+            if vpath.exists():
+                data = json.loads(vpath.read_text(encoding="utf-8"))
+            examples = data.get("examples", [])
+            # find matching example jp text and attach audio_path
+            updated = False
+            for ex in examples:
+                if ex.get("jp") == text:
+                    ex["audio_path"] = f"/tts_cache/{filename}"
+                    updated = True
+            if not updated:
+                examples.append({"jp": text, "en": "", "audio_path": f"/tts_cache/{filename}"})
+            data["examples"] = examples
+            vpath.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        except Exception as e:
+            print("Update vocab with audio failed:", repr(e))
+
+    return {"audio_url": f"/tts_cache/{filename}"}
+
+
+@app.get("/api/source_list")
+async def source_list():
+    return {"sources": list_sources()}

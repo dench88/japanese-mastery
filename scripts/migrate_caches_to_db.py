@@ -41,6 +41,9 @@ def migrate_sentences(session: Session):
         hiragana = data.get("hiragana")
         audio_path = data.get("audio_path")
         hard_items = data.get("hard_items", [])
+        # skip if already in DB
+        if session.get(SentenceCache, sentence_hash):
+            continue
         record = SentenceCache(
             sentence_hash=sentence_hash,
             sentence_text=sentence_text,
@@ -48,7 +51,7 @@ def migrate_sentences(session: Session):
             audio_path=audio_path,
             hard_items_json=json.dumps(hard_items, ensure_ascii=False),
         )
-        session.merge(record)
+        session.add(record)
     session.commit()
 
 
@@ -61,6 +64,9 @@ def migrate_vocab(session: Session):
         brief = data.get("brief")
         detail = data.get("detail")
         examples = data.get("examples", [])
+        # skip if already in DB
+        if session.get(VocabEntryCache, surface_hash):
+            continue
         record = VocabEntryCache(
             surface_hash=surface_hash,
             surface=surface,
@@ -69,7 +75,7 @@ def migrate_vocab(session: Session):
             detail=detail,
             examples_json=json.dumps(examples, ensure_ascii=False),
         )
-        session.merge(record)
+        session.add(record)
     session.commit()
 
 

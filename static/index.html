@@ -141,6 +141,9 @@
         background: linear-gradient(135deg, #ffe8c7, #ffd8a8);
         box-shadow: 0 4px 10px rgba(0, 0, 0, 0.08);
         border-left: 4px solid #ff9f43;
+        display: flex;
+        align-items: flex-start;
+        gap: 0.45rem;
       }
 
       .example-jp {
@@ -154,6 +157,23 @@
         margin-top: 0.15rem;
         font-size: 0.9rem;
         color: #5c4a3a;
+      }
+
+      .example-play {
+        width: 42px;
+        height: 30px;
+        border: 1px solid #111;
+        border-radius: 8px;
+        background: linear-gradient(135deg, #e6f5ff, #7fcaff);
+        position: relative;
+        padding: 0;
+        flex-shrink: 0;
+      }
+      .example-play::before {
+        content: "";
+        position: absolute;
+        inset: 3px 4px;
+        background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='96' height='48' viewBox='0 0 96 48'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0%' y1='0%' x2='100%' y2='100%'%3E%3Cstop offset='0%' stop-color='%23a7e3ff'/%3E%3Cstop offset='100%' stop-color='%2335a5ff'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cpolygon points='38,10 38,38 66,24' fill='url(%23g)' stroke='%23111' stroke-width='0.4'/%3E%3C/svg%3E") center/95% no-repeat;
       }
 
       .deep-brief {
@@ -174,6 +194,10 @@
       <div class="layout">
         <!-- LEFT: full text -->
         <div class="left-stack">
+          <div style="display:flex; justify-content: space-between; align-items: center; margin-bottom:0.35rem;">
+            <div style="font-weight:600;">本文</div>
+            <button id="sources-btn" class="mini-btn">資料一覧</button>
+          </div>
           <div class="left-panel" id="full-text">
             Loading text...
           </div>
@@ -227,6 +251,7 @@
       const vocabBtn = document.getElementById("vocab-button");
       const vocabListBtn = document.getElementById("vocab-list-btn");
       const addVocabBtn = document.getElementById("add-vocab");
+      const sourcesBtn = document.getElementById("sources-btn");
 
       const speakBtn = document.getElementById("speak-sentence");
       const prevBtn = document.getElementById("prev-sentence");
@@ -242,10 +267,12 @@
       let showVocab = false;
       let showFurigana = false;
       let currentManualItems = [];
+      const params = new URLSearchParams(window.location.search);
+      let selectedSource = params.get("source") || "";
 
       async function loadSentences() {
         try {
-          const res = await fetch("/api/sentences");
+          const res = await fetch(`/api/sentences${selectedSource ? `?source=${encodeURIComponent(selectedSource)}` : ""}`);
           if (!res.ok) {
             fullTextEl.textContent = "Error loading sentences.";
             return;
@@ -261,7 +288,7 @@
 
       async function loadSentence(index) {
         try {
-          const res = await fetch(`/api/sentence/${index}`);
+          const res = await fetch(`/api/sentence/${index}${selectedSource ? `?source=${encodeURIComponent(selectedSource)}` : ""}`);
           if (!res.ok) {
             if (res.status === 404) {
               statusEl.textContent = "No more sentences.";
@@ -460,6 +487,10 @@
         window.location.href = "/static/vocab-list.html";
       };
 
+      sourcesBtn.onclick = () => {
+        window.location.href = "/static/sources.html";
+      };
+
       hardestEl.addEventListener("click", async (e) => {
         const btn = e.target;
         // deep dive on fetched item
@@ -492,6 +523,27 @@
           renderVocabPanel(currentItems, currentManualItems);
           return;
         }
+        // play example audio
+        if (btn.classList.contains("example-play")) {
+          const text = btn.dataset.text || "";
+          const surface = btn.dataset.surface || "";
+          if (text) {
+            await playExampleAudio(text, surface);
+          }
+          return;
+        }
+      });
+
+      // handle example play clicks rendered inside the deep-dive block
+      deepDiveEl.addEventListener("click", async (e) => {
+        const btn = e.target;
+        if (btn.classList.contains("example-play")) {
+          const text = btn.dataset.text || "";
+          const surface = btn.dataset.surface || "";
+          if (text) {
+            await playExampleAudio(text, surface);
+          }
+        }
       });
 
       async function fetchDeepDive(item) {
@@ -510,7 +562,7 @@
           const explanation = data.explanation || "説明なし";
           const examples = Array.isArray(data.examples) ? data.examples.slice(0, 2) : [];
           const brief = item.hint_ja || item.brief || "";
-          const examplesHtml = renderExamples(examples);
+          const examplesHtml = renderExamples(examples, item.surface || "");
           const headerLine = brief ? `<div class="deep-brief">${brief}</div>` : "";
           deepDiveEl.innerHTML = `${headerLine}<div class="deep-expl">${explanation}</div>${examplesHtml}`;
         } catch (err) {
@@ -596,15 +648,18 @@
         hardestEl.innerHTML = header + fetchedHtml + manualHtml;
       }
 
-      function renderExamples(examples = []) {
+      function renderExamples(examples = [], surfaceForAudio = "") {
         if (!examples || !examples.length) return "";
         return (
           examples
             .map(
               (ex) =>
                 `<div class="example-card">
-                  <div class="example-jp">✦ ${ex.jp || ""}</div>
-                  <div class="example-en">${ex.en || ""}</div>
+                  <button class="example-play" aria-label="play" data-text="${escapeHtml(ex.jp || "")}" data-surface="${escapeHtml(surfaceForAudio)}"></button>
+                  <div>
+                    <div class="example-jp">✦ ${ex.jp || ""}</div>
+                    <div class="example-en">${ex.en || ""}</div>
+                  </div>
                 </div>`
             )
             .join("")
@@ -617,7 +672,7 @@
       }
 
       function renderManualDeepDive(item) {
-        const examplesHtml = renderExamples(item.examples);
+        const examplesHtml = renderExamples(item.examples, item.surface || "");
         const brief = item.brief || item.hint || "";
         const explanation = item.explanation || item.brief || "説明なし";
         const headerLine = brief ? `<div class="deep-brief">${brief}</div>` : "";
@@ -668,6 +723,27 @@
         }
         currentItems = currentItems.filter((i) => i.surface !== item.surface);
         renderVocabPanel(currentItems, currentManualItems);
+      }
+
+      async function playExampleAudio(text, surface) {
+        try {
+          const res = await fetch("/api/tts_example", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text, surface, voice: "nova" }),
+          });
+          if (!res.ok) {
+            deepDiveEl.textContent = "音声取得エラー";
+            return;
+          }
+          const data = await res.json();
+          const url = data.audio_url;
+          if (!url) return;
+          const audio = new Audio(url);
+          audio.play().catch(() => {});
+        } catch (err) {
+          console.error("play example audio error:", err);
+        }
       }
 
       function briefText(text, max = 40) {
