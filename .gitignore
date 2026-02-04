@@ -1,3 +1,9 @@
 __pycache__/
 .venv/
 .env
+content/raw/
+analysis_cache/
+tts_cache/
+vocab_cache/
+app/app.db
+test_output.mp3
