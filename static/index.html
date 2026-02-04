@@ -134,6 +134,34 @@
         line-height: 1.4;
       }
 
+      .example-card {
+        margin-top: 0.4rem;
+        padding: 0.55rem 0.65rem;
+        border-radius: 10px;
+        background: linear-gradient(135deg, #ffe8c7, #ffd8a8);
+        box-shadow: 0 4px 10px rgba(0, 0, 0, 0.08);
+        border-left: 4px solid #ff9f43;
+      }
+
+      .example-jp {
+        font-size: 1rem;
+        font-weight: 600;
+        color: #2f1b00;
+        letter-spacing: 0.01em;
+      }
+
+      .example-en {
+        margin-top: 0.15rem;
+        font-size: 0.9rem;
+        color: #5c4a3a;
+      }
+
+      .deep-brief {
+        font-weight: 700;
+        color: #2f1b00;
+        margin-bottom: 0.35rem;
+      }
+
       @media (max-width: 800px) {
         .layout {
           flex-direction: column;
@@ -165,6 +193,7 @@
             <button id="toggle-hiragana">HG</button>
             <button id="prev-sentence">前の文</button>
             <button id="next-sentence">次の文</button>
+            <button id="vocab-list-btn">語彙リスト</button>
           </div>
           <div id="sentence-meta" style="font-size: 0.85rem; color: #666">
             文 <span id="sentence-index">-</span> / <span id="sentence-total">-</span>
@@ -196,6 +225,7 @@
       const toggleHiraBtn = document.getElementById("toggle-hiragana");
       const toggleFgBtn = document.getElementById("toggle-fg");
       const vocabBtn = document.getElementById("vocab-button");
+      const vocabListBtn = document.getElementById("vocab-list-btn");
       const addVocabBtn = document.getElementById("add-vocab");
 
       const speakBtn = document.getElementById("speak-sentence");
@@ -426,6 +456,10 @@
         await loadSentence(currentIndex + 1);
       };
 
+      vocabListBtn.onclick = () => {
+        window.location.href = "/static/vocab-list.html";
+      };
+
       hardestEl.addEventListener("click", async (e) => {
         const btn = e.target;
         // deep dive on fetched item
@@ -475,13 +509,10 @@
           const data = await res.json();
           const explanation = data.explanation || "説明なし";
           const examples = Array.isArray(data.examples) ? data.examples.slice(0, 2) : [];
-          const examplesHtml = examples
-            .map(
-              (ex) =>
-                `<div class="deep-example"><div>${ex.jp || ""}</div><div style="color:#555;">${ex.en || ""}</div></div>`
-            )
-            .join("");
-          deepDiveEl.innerHTML = `<div class="deep-title">詳しい解説</div><div class="deep-expl">${explanation}</div>${examplesHtml}`;
+          const brief = item.hint_ja || item.brief || "";
+          const examplesHtml = renderExamples(examples);
+          const headerLine = brief ? `<div class="deep-brief">${brief}</div>` : "";
+          deepDiveEl.innerHTML = `${headerLine}<div class="deep-expl">${explanation}</div>${examplesHtml}`;
         } catch (err) {
           console.error("Deep dive fetch error:", err);
           deepDiveEl.textContent = "取得エラー";
@@ -559,7 +590,7 @@
         const manualHtml = manualItems
           .map(
             (m) =>
-              `<div class="hard-item"><strong>${m.surface}</strong> — ${m.brief || m.hint || m.explanation || "説明なし"} <button class="mini-btn deep-manual" data-mid="${m.id}">詳しく</button><button class="mini-btn delete-manual" data-mid="${m.id}">削除</button></div>`
+              `<div class="hard-item"><strong>${m.surface}</strong> — ${cleanHint(m.brief || m.hint || m.explanation || "説明なし", m.surface)} <button class="mini-btn deep-manual" data-mid="${m.id}">詳しく</button><button class="mini-btn delete-manual" data-mid="${m.id}">削除</button></div>`
           )
           .join("");
         hardestEl.innerHTML = header + fetchedHtml + manualHtml;
@@ -568,14 +599,15 @@
       function renderExamples(examples = []) {
         if (!examples || !examples.length) return "";
         return (
-          "<div class=\"deep-example\">" +
           examples
             .map(
               (ex) =>
-                `<div>${ex.jp || ""}</div><div style="color:#555;">${ex.en || ""}</div>`
+                `<div class="example-card">
+                  <div class="example-jp">✦ ${ex.jp || ""}</div>
+                  <div class="example-en">${ex.en || ""}</div>
+                </div>`
             )
-            .join("") +
-          "</div>"
+            .join("")
         );
       }
 
@@ -586,8 +618,10 @@
 
       function renderManualDeepDive(item) {
         const examplesHtml = renderExamples(item.examples);
+        const brief = item.brief || item.hint || "";
         const explanation = item.explanation || item.brief || "説明なし";
-        deepDiveEl.innerHTML = `<div class="deep-title">詳しい解説</div><div class="deep-expl">${explanation}</div>${examplesHtml}`;
+        const headerLine = brief ? `<div class="deep-brief">${brief}</div>` : "";
+        deepDiveEl.innerHTML = `${headerLine}<div class="deep-expl">${explanation}</div>${examplesHtml}`;
       }
 
       async function fetchManualDeepDive(item) {
@@ -615,7 +649,7 @@
             ? {
                 ...m,
                 ...newData,
-                brief: briefText(newData.explanation || newData.hint || ""),
+                brief: briefText(cleanHint(newData.hint || newData.brief || newData.explanation || "", m.surface)),
               }
             : m
         );
@@ -639,6 +673,16 @@
       function briefText(text, max = 40) {
         if (!text) return "説明なし";
         return text.length > max ? text.slice(0, max) + "…" : text;
+      }
+
+      function cleanHint(hint, surface) {
+        if (!hint) return hint;
+        try {
+          const pattern = new RegExp(`^[「『]?${escapeRegex(surface)}[」』]?[：:】\\s]*`, "u");
+          return hint.replace(pattern, "").trim();
+        } catch {
+          return hint;
+        }
       }
 
       function renderSentenceDisplay() {

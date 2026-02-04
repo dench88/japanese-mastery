@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <title>語彙リスト</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      body {
+        font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+        margin: 0;
+        padding: 1rem;
+        background: #fafafa;
+        color: #222;
+      }
+      h1 {
+        margin: 0 0 1rem 0;
+        font-size: 1.4rem;
+      }
+      .top-bar {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 1rem;
+      }
+      button {
+        padding: 0.45rem 0.8rem;
+        font-size: 0.95rem;
+        border: 1px solid #ccc;
+        background: #fff;
+        cursor: pointer;
+      }
+      .table {
+        width: 100%;
+        border-collapse: collapse;
+        background: #fff;
+        border: 1px solid #e5e5e5;
+        table-layout: fixed;
+      }
+      .table th,
+      .table td {
+        padding: 0.55rem 0.75rem;
+        border-bottom: 1px solid #eee;
+        text-align: left;
+        word-wrap: break-word;
+      }
+      .table th {
+        background: #f2f2f2;
+        font-weight: 600;
+      }
+      .muted {
+        color: #777;
+      }
+      .col-word { width: 14%; }
+      .col-reading { width: 14%; }
+      .col-brief { width: 72%; }
+    </style>
+  </head>
+  <body>
+    <div class="top-bar">
+      <h1>語彙リスト</h1>
+      <button id="return-btn">本文へ戻る</button>
+    </div>
+    <table class="table">
+      <thead>
+        <tr>
+          <th class="col-word">語</th>
+          <th class="col-reading">読み</th>
+          <th class="col-brief">短い説明</th>
+        </tr>
+      </thead>
+      <tbody id="vocab-body"></tbody>
+    </table>
+
+    <script>
+      const bodyEl = document.getElementById("vocab-body");
+      document.getElementById("return-btn").onclick = () => {
+        window.location.href = "/";
+      };
+
+      async function loadVocab() {
+        try {
+          const res = await fetch("/api/vocab_list");
+          if (!res.ok) {
+            bodyEl.innerHTML = `<tr><td colspan="3">取得エラー</td></tr>`;
+            return;
+          }
+          const data = await res.json();
+          const entries = data.entries || [];
+          if (!entries.length) {
+            bodyEl.innerHTML = `<tr><td colspan="3">データなし</td></tr>`;
+            return;
+          }
+          bodyEl.innerHTML = entries
+            .map((e) => {
+              const brief = chooseBrief(e);
+              return `<tr>
+                  <td>${escapeHtml(e.surface || "")}</td>
+                  <td class="muted">${escapeHtml(e.base_form || "")}</td>
+                  <td>${escapeHtml(brief)}</td>
+                </tr>`;
+            })
+            .join("");
+        } catch (err) {
+          console.error(err);
+          bodyEl.innerHTML = `<tr><td colspan="3">取得エラー</td></tr>`;
+        }
+      }
+
+      function escapeHtml(str) {
+        return (str || "")
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;");
+      }
+
+      function chooseBrief(e) {
+        const brief = e.brief || "";
+        const detail = e.detail || "";
+        if (brief) return brief;
+        return detail;
+      }
+
+      loadVocab();
+    </script>
+  </body>
+</html>
