@@ -27,6 +27,17 @@ class VocabEntryCache(SQLModel, table=True):
     examples_json: Optional[str] = None  # JSON string list of examples
 
 
+class SourceMaterial(SQLModel, table=True):
+    source_hash: str = Field(primary_key=True)
+    title_ja: Optional[str] = None
+    title_en: Optional[str] = None
+    title_ko: Optional[str] = None
+    title_zh: Optional[str] = None
+    text_path: Optional[str] = None  # relative path to source text
+    audio_path: Optional[str] = None  # relative path to recorded audio
+    category: Optional[str] = None
+
+
 def init_db():
     SQLModel.metadata.create_all(ENGINE)
 

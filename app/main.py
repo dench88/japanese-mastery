@@ -3,9 +3,10 @@ import os
 import re
 import json
 import hashlib
+import shutil
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -22,6 +23,7 @@ from app.db_models import (
     upsert_vocab,
     SentenceCache,
     VocabEntryCache,
+    SourceMaterial,
 )
 
 # --- paths & env ---
@@ -31,8 +33,16 @@ load_dotenv(ENV_PATH)  # load env from repo root
 SPEED_DEFAULT = float(os.getenv("TTS_SPEED_DEFAULT", "1.1"))
 
 # --- load and split book text ---
-BOOK_PATH = ROOT_DIR / "content" / "raw" / "sample-writing-cafune-1.txt"
-BOOK_TEXT = BOOK_PATH.read_text(encoding="utf-8")
+BOOKS_DIR = ROOT_DIR / "content" / "source_materials"
+BOOKS_DIR.mkdir(parents=True, exist_ok=True)
+DEFAULT_BOOK = BOOKS_DIR / "sample-writing-cafune-1.txt"
+# always seed default from legacy cafune text if present
+legacy = ROOT_DIR / "content" / "raw" / "sample-writing-cafune-1.txt"
+if legacy.exists():
+    DEFAULT_BOOK.write_text(legacy.read_text(encoding="utf-8"), encoding="utf-8")
+elif not DEFAULT_BOOK.exists():
+    DEFAULT_BOOK.write_text("これはサンプル文章です。", encoding="utf-8")
+BOOK_TEXT = DEFAULT_BOOK.read_text(encoding="utf-8")
 SENTENCE_PATTERN = re.compile(r"(?<=[。！？!?])\s*")  # Japanese sentence split
 
 # --- caches ---
@@ -42,6 +52,8 @@ ANALYSIS_CACHE_DIR = ROOT_DIR / "analysis_cache"
 ANALYSIS_CACHE_DIR.mkdir(exist_ok=True)
 VOCAB_CACHE_DIR = ROOT_DIR / "vocab_cache"
 VOCAB_CACHE_DIR.mkdir(exist_ok=True)
+RECORDINGS_DIR = ROOT_DIR / "recordings"
+RECORDINGS_DIR.mkdir(exist_ok=True)
 
 # --- OpenAI client (single instance) ---
 api_key = os.getenv("OPENAI_API_KEY")
@@ -55,6 +67,7 @@ init_db()
 # serve static files
 app.mount("/static", StaticFiles(directory=ROOT_DIR / "static"), name="static")
 app.mount("/tts_cache", StaticFiles(directory=TTS_CACHE_DIR), name="tts-cache")
+app.mount("/recordings", StaticFiles(directory=RECORDINGS_DIR), name="recordings")
 
 
 class TTSRequest(BaseModel):
@@ -95,6 +108,13 @@ class ReadingWordRequest(BaseModel):
 
 # simple in-memory cache for word readings to avoid extra calls in one run
 READING_CACHE: dict[str, str] = {}
+
+
+class SourceRecordResponse(BaseModel):
+    name: str
+    path: str
+    audio_path: str | None = None
+    category: str | None = None
 
 class ManualBriefRequest(BaseModel):
     sentence: str
@@ -291,25 +311,59 @@ def tts_filename(text: str, voice: str, speed: float) -> str:
 
 
 def list_sources():
-    raw_dir = ROOT_DIR / "content" / "raw"
     sources = []
-    for p in raw_dir.iterdir():
+    # DB-driven entries
+    with get_session() as session:
+        rows = session.exec(select(SourceMaterial)).all()
+        for r in rows:
+            sources.append(
+                {
+                    "name": r.title_ja or (Path(r.text_path).name if r.text_path else r.source_hash),
+                    "path": r.text_path,
+                    "audio_path": r.audio_path,
+                    "category": r.category,
+                }
+            )
+    # File-based entries (fallback / legacy)
+    for p in BOOKS_DIR.iterdir():
         if p.is_file() and p.suffix.lower() in {".txt", ".md"}:
-            sources.append({"name": p.name, "path": str(p.relative_to(ROOT_DIR))})
+            rel = p.relative_to(ROOT_DIR).as_posix()
+            if not any(s.get("path") == rel for s in sources):
+                sources.append({"name": p.name, "path": rel, "audio_path": None, "category": None})
     return sorted(sources, key=lambda x: x["name"])
 
 
 def load_source_text(source_name: str | None) -> str:
     if source_name:
-        candidate = ROOT_DIR / "content" / "raw" / source_name
+        candidate = Path(source_name)
+        if not candidate.is_absolute():
+            candidate = ROOT_DIR / candidate
         if candidate.exists() and candidate.is_file():
             return candidate.read_text(encoding="utf-8")
+        # fallback to name under BOOKS_DIR
+        candidate2 = BOOKS_DIR / source_name
+        if candidate2.exists() and candidate2.is_file():
+            return candidate2.read_text(encoding="utf-8")
+        raise HTTPException(status_code=404, detail="Source not found")
     # fallback
     return BOOK_TEXT
 
 
 def split_sentences(text: str):
     return [s for s in SENTENCE_PATTERN.split(text.strip()) if s]
+
+
+def ensure_text_path(text: str, preferred_name: str | None = None) -> str:
+    """Create a new text file in BOOKS_DIR with provided content and return relative path."""
+    stem = preferred_name or hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+    candidate = BOOKS_DIR / f"{stem}.txt"
+    # avoid overwrite
+    counter = 1
+    while candidate.exists():
+        candidate = BOOKS_DIR / f"{stem}_{counter}.txt"
+        counter += 1
+    candidate.write_text(text, encoding="utf-8")
+    return candidate.relative_to(ROOT_DIR).as_posix()
 
 
 # --- shared analysis helper (reading + hard items) ---
@@ -367,7 +421,8 @@ def analyze_sentence_internal(sentence: str):
 
 @app.get("/")
 async def root():
-    return FileResponse(ROOT_DIR / "static" / "index.html")
+    # open sources page first
+    return RedirectResponse(url="/static/sources.html", status_code=302)
 
 
 @app.get("/api/book")
@@ -712,3 +767,75 @@ async def reading_word(req: ReadingWordRequest):
 @app.get("/api/source_list")
 async def source_list():
     return {"sources": list_sources()}
+
+
+@app.post("/api/source_record", response_model=SourceRecordResponse)
+async def source_record(
+    file: UploadFile = File(...),
+    category: str | None = Form(None),
+    title: str | None = Form(None),
+):
+    audio_bytes = await file.read()
+    if not audio_bytes:
+        raise HTTPException(status_code=400, detail="empty audio")
+
+    # save audio
+    audio_hash = hashlib.sha256(audio_bytes).hexdigest()
+    audio_path = RECORDINGS_DIR / f"{audio_hash}.webm"
+    audio_path.write_bytes(audio_bytes)
+    audio_rel = audio_path.relative_to(ROOT_DIR).as_posix()
+
+    # transcribe to text
+    transcript_text = ""
+    try:
+        transcription = client.audio.transcriptions.create(
+            model="gpt-4o-transcribe",
+            file=(file.filename or "audio.webm", audio_bytes),
+            response_format="text",
+        )
+        transcript_text = transcription or ""
+    except Exception as e:
+        print("transcription error:", repr(e))
+        raise HTTPException(status_code=500, detail="transcription failed")
+
+    # translate to Japanese
+    ja_text = transcript_text
+    try:
+        chat = client.chat.completions.create(
+            model="gpt-4o-mini",
+            temperature=0,
+            messages=[
+                {"role": "system", "content": "Translate the following into natural Japanese only. Return only the Japanese text."},
+                {"role": "user", "content": transcript_text},
+            ],
+        )
+        ja_text = chat.choices[0].message.content or transcript_text
+    except Exception as e:
+        print("translate error:", repr(e))
+        ja_text = transcript_text
+
+    # save text to source_materials
+    text_rel = ensure_text_path(ja_text, preferred_name=f"recording_{audio_hash[:8]}")
+
+    source_hash = hashlib.sha256(ja_text.encode("utf-8")).hexdigest()
+    with get_session() as session:
+        session.merge(
+            SourceMaterial(
+                source_hash=source_hash,
+                title_ja=title or ja_text[:30],
+                title_en=None,
+                title_ko=None,
+                title_zh=None,
+                text_path=text_rel,
+                audio_path=audio_rel,
+                category=category,
+            )
+        )
+        session.commit()
+
+    return {
+        "name": title or ja_text[:30],
+        "path": text_rel,
+        "audio_path": audio_rel,
+        "category": category,
+    }

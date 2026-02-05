@@ -43,6 +43,10 @@
   </head>
   <body>
     <h1>資料一覧</h1>
+    <div style="margin-bottom:0.75rem; display:flex; gap:0.5rem; flex-wrap:wrap;">
+      <button id="record-btn">録音</button>
+      <span id="record-status" style="font-size:0.9rem; color:#555;"></span>
+    </div>
     <div class="list" id="list">読み込み中…</div>
     <div style="margin-top:1rem;">
       <button id="back-btn">本文へ戻る</button>
@@ -52,6 +56,58 @@
       document.getElementById("back-btn").onclick = () => {
         window.location.href = "/";
       };
+
+      const recordBtn = document.getElementById("record-btn");
+      const recordStatus = document.getElementById("record-status");
+      let mediaRecorder = null;
+      let chunks = [];
+      let recording = false;
+
+      recordBtn.onclick = async () => {
+        if (!recording) {
+          try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            mediaRecorder = new MediaRecorder(stream);
+            chunks = [];
+            mediaRecorder.ondataavailable = (e) => {
+              if (e.data.size > 0) chunks.push(e.data);
+            };
+            mediaRecorder.onstop = async () => {
+              const blob = new Blob(chunks, { type: "audio/webm" });
+              await uploadRecording(blob);
+            };
+            mediaRecorder.start();
+            recording = true;
+            recordBtn.textContent = "停止";
+            recordStatus.textContent = "録音中…";
+          } catch (err) {
+            console.error(err);
+            recordStatus.textContent = "マイク許可が必要です。";
+          }
+        } else {
+          mediaRecorder?.stop();
+          recording = false;
+          recordBtn.textContent = "録音";
+          recordStatus.textContent = "アップロード中…";
+        }
+      };
+
+      async function uploadRecording(blob) {
+        try {
+          const fd = new FormData();
+          fd.append("file", blob, "recording.webm");
+          const res = await fetch("/api/source_record", { method: "POST", body: fd });
+          if (!res.ok) {
+            recordStatus.textContent = "保存に失敗しました";
+            return;
+          }
+          recordStatus.textContent = "保存しました";
+          await loadSources();
+        } catch (err) {
+          console.error(err);
+          recordStatus.textContent = "保存に失敗しました";
+        }
+      }
 
       async function loadSources() {
         try {
@@ -68,11 +124,16 @@
           }
           listEl.innerHTML = sources
             .map(
-              (s) =>
-                `<div class="row">
-                  <span>${escapeHtml(s.name)}</span>
-                  <button onclick="loadFile('${encodeURIComponent(s.name)}')">読込</button>
-                </div>`
+              (s) => {
+                const pathVal = s.path || s.name || "";
+                return `<div class="row">
+                  <span>${escapeHtml(s.name)} ${s.category ? `<span style="color:#888;font-size:0.85rem;">(${escapeHtml(s.category)})</span>` : ""}</span>
+                  <div style="display:flex; gap:0.4rem; align-items:center;">
+                    ${s.audio_path ? `<audio controls style="max-width:180px;" src="/${s.audio_path}"></audio>` : ""}
+                    <button onclick="loadFile('${encodeURIComponent(pathVal)}')">読込</button>
+                  </div>
+                </div>`;
+              }
             )
             .join("");
         } catch (err) {
@@ -81,8 +142,9 @@
         }
       }
 
-      function loadFile(name) {
-        window.location.href = "/?source=" + name;
+      function loadFile(path) {
+        // pass the stored path (relative to repo root) so backend can resolve it
+        window.location.href = `/static/index.html?source=${encodeURIComponent(path)}`;
       }
 
       function escapeHtml(str) {

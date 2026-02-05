@@ -2,6 +2,7 @@ __pycache__/
 .venv/
 .env
 content/raw/
+content/source_materials/*.pdf
 analysis_cache/
 tts_cache/
 vocab_cache/

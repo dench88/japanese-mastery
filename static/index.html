@@ -81,14 +81,16 @@
       }
 
       .sentence-box {
-        border: 1px solid #eee;
-        border-radius: 4px;
-        padding: 0.75rem;
+        border: 1px solid #f7cfa0;
+        border-radius: 8px;
+        padding: 1rem;
         min-height: 0;
-        background: #fdfdfd;
+        background: linear-gradient(145deg, #fff7ee, #ffe9cf);
         white-space: pre-wrap;
-        line-height: 1.8;
-        font-size: 1.1rem;
+        line-height: 2.0;
+        font-size: 1.35rem;
+        font-family: "Noto Serif JP", "Hiragino Mincho ProN", "Yu Mincho", serif;
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.06);
       }
 
       .controls {
@@ -278,6 +280,10 @@
       let currentManualItems = [];
       const params = new URLSearchParams(window.location.search);
       let selectedSource = params.get("source") || "";
+      if (selectedSource) {
+        // if an encoded path was provided, decode it
+        selectedSource = decodeURIComponent(selectedSource);
+      }
       let startIndex = Number.parseInt(params.get("idx") || "0");
       if (Number.isNaN(startIndex) || startIndex < 0) startIndex = 0;
       let currentVoice = voiceSelect.value || "nova";

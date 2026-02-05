@@ -3,3 +3,6 @@ uvicorn
 openai
 python-dotenv
 sqlmodel
+pypdf
+cryptography
+python-multipart
