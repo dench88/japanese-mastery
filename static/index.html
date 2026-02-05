@@ -196,7 +196,11 @@
         <div class="left-stack">
           <div style="display:flex; justify-content: space-between; align-items: center; margin-bottom:0.35rem;">
             <div style="font-weight:600;">本文</div>
-            <button id="sources-btn" class="mini-btn">資料一覧</button>
+            <div style="display:flex; gap:0.35rem; align-items:center;">
+              <button id="sources-btn" class="mini-btn">資料一覧</button>
+              <button id="prev-sentence" class="mini-btn">前の文</button>
+              <button id="next-sentence" class="mini-btn">次の文</button>
+            </div>
           </div>
           <div class="left-panel" id="full-text">
             Loading text...
@@ -210,14 +214,18 @@
         <div class="right-panel">
           <!-- <h2>Current Sentence</h2> -->
           <div class="controls">
-            <button id="speak-sentence">文を再生</button>
-            <button id="vocab-button">単語ビルダー</button>
+            <button id="speak-sentence">再生</button>
+            <select id="voice-select" aria-label="voice" style="padding:0.45rem 0.6rem;">
+              <option value="nova">nova</option>
+              <option value="sage">sage</option>
+              <option value="cedar">cedar</option>
+              <option value="onyx">onyx</option>
+            </select>
+            <button id="vocab-button">単語</button>
             <button id="add-vocab">追加</button>
             <button id="toggle-fg">FG</button>
             <button id="toggle-hiragana">HG</button>
-            <button id="prev-sentence">前の文</button>
-            <button id="next-sentence">次の文</button>
-            <button id="vocab-list-btn">語彙リスト</button>
+            <button id="vocab-list-btn">語彙</button>
           </div>
           <div id="sentence-meta" style="font-size: 0.85rem; color: #666">
             文 <span id="sentence-index">-</span> / <span id="sentence-total">-</span>
@@ -252,6 +260,7 @@
       const vocabListBtn = document.getElementById("vocab-list-btn");
       const addVocabBtn = document.getElementById("add-vocab");
       const sourcesBtn = document.getElementById("sources-btn");
+      const voiceSelect = document.getElementById("voice-select");
 
       const speakBtn = document.getElementById("speak-sentence");
       const prevBtn = document.getElementById("prev-sentence");
@@ -269,6 +278,9 @@
       let currentManualItems = [];
       const params = new URLSearchParams(window.location.search);
       let selectedSource = params.get("source") || "";
+      let startIndex = Number.parseInt(params.get("idx") || "0");
+      if (Number.isNaN(startIndex) || startIndex < 0) startIndex = 0;
+      let currentVoice = voiceSelect.value || "nova";
 
       async function loadSentences() {
         try {
@@ -342,7 +354,7 @@
             },
             body: JSON.stringify({
               text: currentSentence,
-              voice: "nova",
+              voice: currentVoice,
               model: "gpt-4o-mini-tts",
             }),
           });
@@ -377,6 +389,9 @@
       }
 
       speakBtn.onclick = speakCurrentSentence;
+      voiceSelect.onchange = () => {
+        currentVoice = voiceSelect.value || "nova";
+      };
 
       toggleHiraBtn.onclick = () => {
         showHiragana = !showHiragana;
@@ -484,7 +499,14 @@
       };
 
       vocabListBtn.onclick = () => {
-        window.location.href = "/static/vocab-list.html";
+        // persist current sentence index in return URL
+        const url = new URL(window.location.href);
+        url.searchParams.set("idx", currentIndex.toString());
+        const back = encodeURIComponent(url.pathname + url.search + url.hash);
+        try {
+          localStorage.setItem("last_main_url", url.toString());
+        } catch (_) {}
+        window.location.href = `/static/vocab-list.html?from=${back}`;
       };
 
       sourcesBtn.onclick = () => {
@@ -549,6 +571,9 @@
       async function fetchDeepDive(item) {
         deepDiveEl.innerHTML = "読み込み中…";
         try {
+          if (!item.reading) {
+            item.reading = await fetchWordReading(item.surface);
+          }
           const res = await fetch("/api/deep_dive", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -562,9 +587,10 @@
           const explanation = data.explanation || "説明なし";
           const examples = Array.isArray(data.examples) ? data.examples.slice(0, 2) : [];
           const brief = item.hint_ja || item.brief || "";
+          const wordHeader = buildWordHeader(item);
           const examplesHtml = renderExamples(examples, item.surface || "");
           const headerLine = brief ? `<div class="deep-brief">${brief}</div>` : "";
-          deepDiveEl.innerHTML = `${headerLine}<div class="deep-expl">${explanation}</div>${examplesHtml}`;
+          deepDiveEl.innerHTML = `${wordHeader}${headerLine}<div class="deep-expl">${explanation}</div>${examplesHtml}`;
         } catch (err) {
           console.error("Deep dive fetch error:", err);
           deepDiveEl.textContent = "取得エラー";
@@ -675,13 +701,17 @@
         const examplesHtml = renderExamples(item.examples, item.surface || "");
         const brief = item.brief || item.hint || "";
         const explanation = item.explanation || item.brief || "説明なし";
+        const wordHeader = buildWordHeader(item);
         const headerLine = brief ? `<div class="deep-brief">${brief}</div>` : "";
-        deepDiveEl.innerHTML = `${headerLine}<div class="deep-expl">${explanation}</div>${examplesHtml}`;
+        deepDiveEl.innerHTML = `${wordHeader}${headerLine}<div class="deep-expl">${explanation}</div>${examplesHtml}`;
       }
 
       async function fetchManualDeepDive(item) {
         deepDiveEl.innerHTML = "読み込み中…";
         try {
+          if (!item.reading) {
+            item.reading = await fetchWordReading(item.surface);
+          }
           const res = await fetch("/api/deep_dive", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -730,7 +760,7 @@
           const res = await fetch("/api/tts_example", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ text, surface, voice: "nova" }),
+            body: JSON.stringify({ text, surface, voice: currentVoice }),
           });
           if (!res.ok) {
             deepDiveEl.textContent = "音声取得エラー";
@@ -767,6 +797,28 @@
         } else {
           currentSentenceEl.textContent = currentSentence;
         }
+      }
+
+      async function fetchWordReading(surface) {
+        if (!surface) return "";
+        try {
+          const res = await fetch("/api/reading_word", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ surface }),
+          });
+          if (!res.ok) return "";
+          const data = await res.json();
+          return data.reading || "";
+        } catch (err) {
+          console.error("reading word error", err);
+          return "";
+        }
+      }
+
+      function buildWordHeader(item) {
+        const reading = item.reading || item.base_form || "";
+        return `<div style="font-weight:700; font-size:1.05rem; margin-bottom:0.25rem;">${escapeHtml(item.surface || "")}<span style="margin-left:0.4rem; color:#666; font-size:0.95rem;">${escapeHtml(reading)}</span></div>`;
       }
 
       function setActive(btn, isActive) {
@@ -878,7 +930,7 @@
       // Initial load
       (async () => {
         await loadSentences();
-        await loadSentence(0);
+        await loadSentence(startIndex);
       })();
     </script>
   </body>

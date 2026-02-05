@@ -11,6 +11,18 @@ from pydantic import BaseModel
 
 from dotenv import load_dotenv
 from openai import OpenAI
+from sqlmodel import Session, select
+
+from app.db_models import (
+    init_db,
+    get_session,
+    sentence_to_dict,
+    vocab_to_dict,
+    upsert_sentence,
+    upsert_vocab,
+    SentenceCache,
+    VocabEntryCache,
+)
 
 # --- paths & env ---
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -38,6 +50,7 @@ if not api_key:
 client = OpenAI(api_key=api_key)
 
 app = FastAPI()
+init_db()
 
 # serve static files
 app.mount("/static", StaticFiles(directory=ROOT_DIR / "static"), name="static")
@@ -76,6 +89,13 @@ class DeepDiveResponse(BaseModel):
     examples: list[dict]
 
 
+class ReadingWordRequest(BaseModel):
+    surface: str
+
+
+# simple in-memory cache for word readings to avoid extra calls in one run
+READING_CACHE: dict[str, str] = {}
+
 class ManualBriefRequest(BaseModel):
     sentence: str
     surface: str
@@ -106,6 +126,162 @@ def sentence_cache_path(sentence: str) -> Path:
 def vocab_cache_path(surface: str) -> Path:
     key_hash = hashlib.sha256(surface.strip().encode("utf-8")).hexdigest()
     return VOCAB_CACHE_DIR / f"{key_hash}.json"
+
+
+def sentence_hash(sentence: str) -> str:
+    return hashlib.sha256(sentence.strip().encode("utf-8")).hexdigest()
+
+
+def vocab_hash(surface: str) -> str:
+    return hashlib.sha256(surface.strip().encode("utf-8")).hexdigest()
+
+
+def load_sentence_cache(sentence: str) -> dict:
+    """DB first, fallback to JSON. Returns dict with hiragana, hard_items, audio_path, sentence."""
+    h = sentence_hash(sentence)
+    data = {"sentence": sentence, "hiragana": None, "hard_items": [], "audio_path": None}
+    with get_session() as session:
+        row = session.get(SentenceCache, h)
+        if row:
+            dbd = sentence_to_dict(row) or {}
+            data.update(
+                {
+                    "hiragana": dbd.get("hiragana"),
+                    "hard_items": dbd.get("hard_items", []),
+                    "audio_path": dbd.get("audio_path"),
+                }
+            )
+            return data
+    # fallback JSON
+    path = sentence_cache_path(sentence)
+    if path.exists():
+        try:
+            cached = json.loads(path.read_text(encoding="utf-8"))
+            data.update(
+                {
+                    "hiragana": cached.get("hiragana"),
+                    "hard_items": cached.get("hard_items", []),
+                    "audio_path": cached.get("audio_path"),
+                }
+            )
+        except Exception:
+            pass
+    return data
+
+
+def save_sentence_cache(sentence: str, hiragana=None, hard_items=None, audio_path=None):
+    """Persist to DB and mirror JSON for backward compatibility."""
+    h = sentence_hash(sentence)
+    # merge with existing values
+    existing = load_sentence_cache(sentence)
+    if hiragana is not None:
+        existing["hiragana"] = hiragana
+    if hard_items is not None:
+        existing["hard_items"] = hard_items
+    if audio_path is not None:
+        existing["audio_path"] = audio_path
+    with get_session() as session:
+        upsert_sentence(
+            session,
+            sentence_hash=h,
+            sentence_text=sentence,
+            hiragana=existing.get("hiragana"),
+            audio_path=existing.get("audio_path"),
+            hard_items=existing.get("hard_items") or [],
+        )
+        session.commit()
+    # mirror JSON
+    path = sentence_cache_path(sentence)
+    try:
+        path.write_text(
+            json.dumps(
+                {
+                    "sentence": sentence,
+                    "hiragana": existing.get("hiragana"),
+                    "hard_items": existing.get("hard_items") or [],
+                    "audio_path": existing.get("audio_path"),
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+
+def load_vocab_cache(surface: str) -> dict:
+    """DB first, fallback JSON."""
+    h = vocab_hash(surface)
+    data = {"surface": surface, "base_form": surface, "brief": None, "detail": None, "examples": []}
+    with get_session() as session:
+        row = session.get(VocabEntryCache, h)
+        if row:
+            dbd = vocab_to_dict(row) or {}
+            data.update(
+                {
+                    "base_form": dbd.get("base_form") or surface,
+                    "brief": dbd.get("brief"),
+                    "detail": dbd.get("detail"),
+                    "examples": dbd.get("examples", []),
+                }
+            )
+            return data
+    path = vocab_cache_path(surface)
+    if path.exists():
+        try:
+            cached = json.loads(path.read_text(encoding="utf-8"))
+            data.update(
+                {
+                    "base_form": cached.get("base_form") or surface,
+                    "brief": cached.get("brief"),
+                    "detail": cached.get("detail"),
+                    "examples": cached.get("examples", []),
+                }
+            )
+        except Exception:
+            pass
+    return data
+
+
+def save_vocab_cache(surface: str, base_form=None, brief=None, detail=None, examples=None):
+    h = vocab_hash(surface)
+    existing = load_vocab_cache(surface)
+    if base_form is not None:
+        existing["base_form"] = base_form
+    if brief is not None:
+        existing["brief"] = brief
+    if detail is not None:
+        existing["detail"] = detail
+    if examples is not None:
+        existing["examples"] = examples
+    with get_session() as session:
+        upsert_vocab(
+            session,
+            surface_hash=h,
+            surface=surface,
+            base_form=existing.get("base_form"),
+            brief=existing.get("brief"),
+            detail=existing.get("detail"),
+            examples=existing.get("examples") or [],
+        )
+        session.commit()
+    path = vocab_cache_path(surface)
+    try:
+        path.write_text(
+            json.dumps(
+                {
+                    "surface": surface,
+                    "base_form": existing.get("base_form"),
+                    "brief": existing.get("brief"),
+                    "detail": existing.get("detail"),
+                    "examples": existing.get("examples") or [],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
 
 
 def tts_filename(text: str, voice: str, speed: float) -> str:
@@ -139,17 +315,9 @@ def split_sentences(text: str):
 # --- shared analysis helper (reading + hard items) ---
 def analyze_sentence_internal(sentence: str):
     normalized_text = sentence.strip()
-    cache_path = sentence_cache_path(normalized_text)
-
-    if cache_path.exists():
-        try:
-            cached = json.loads(cache_path.read_text(encoding="utf-8"))
-            reading = cached.get("hiragana")
-            items = cached.get("hard_items", [])
-            if reading is not None and isinstance(items, list):
-                return reading, items
-        except Exception:
-            pass  # fall through to fresh call
+    cached = load_sentence_cache(normalized_text)
+    if cached.get("hiragana") is not None and isinstance(cached.get("hard_items"), list):
+        return cached["hiragana"], cached.get("hard_items", [])
 
     prompt = (
         "You are a Japanese language coach for advanced learners (JLPT N1+). Given ONE Japanese sentence, do two things: "
@@ -158,7 +326,7 @@ def analyze_sentence_internal(sentence: str):
         "Respond ONLY with JSON matching exactly this schema (all explanations in Japanese, no English words):\n"
         '{ "reading_hiragana": "<sentence rendered fully in hiragana>", '
         '"items": [ { "type": "word" | "grammar", "surface": "<exact span from the sentence>", '
-        '"base_form": "<dictionary form or grammar label>", "difficulty": 1, '
+        '"base_form": "<dictionary form or grammar label>", "reading": "<hiragana reading of the surface>", "difficulty": 1, '
         '"hint_ja": "<short explanation in Japanese>", "reason": "<why this is difficult (Japanese)>" } ] }'
     )
 
@@ -188,16 +356,7 @@ def analyze_sentence_internal(sentence: str):
         if not isinstance(items, list):
             items = []
         reading = data.get("reading_hiragana")
-        try:
-            cache_path.write_text(
-                json.dumps(
-                    {"hiragana": reading, "hard_items": items},
-                    ensure_ascii=False,
-                ),
-                encoding="utf-8",
-            )
-        except Exception as e:
-            print("Analyze cache write error:", repr(e))
+        save_sentence_cache(normalized_text, hiragana=reading, hard_items=items)
     except Exception as e:
         print("Analyze error:", repr(e))
         reading = None
@@ -251,23 +410,11 @@ async def tts(req: TTSRequest):
     key_str = f"{model}|{voice}|{speed}|{normalized_text}"
     key_hash = hashlib.sha256(key_str.encode("utf-8")).hexdigest()
     cache_path = TTS_CACHE_DIR / f"{key_hash}.mp3"
-    sentence_cache = sentence_cache_path(normalized_text)
-    # ensure sentence cache exists with defaults
-    if not sentence_cache.exists():
-        sentence_cache.write_text(
-            json.dumps({"hiragana": None, "hard_items": [], "audio_path": None}, ensure_ascii=False),
-            encoding="utf-8",
-        )
+    audio_rel = f"/tts_cache/{cache_path.name}"
 
     # cache hit: stream file
     if cache_path.exists():
-        # write audio path reference
-        try:
-            data = json.loads(sentence_cache.read_text(encoding="utf-8"))
-            data["audio_path"] = str(cache_path.relative_to(ROOT_DIR))
-            sentence_cache.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-        except Exception:
-            pass
+        save_sentence_cache(normalized_text, audio_path=audio_rel)
         return FileResponse(cache_path, media_type="audio/mpeg")
 
     # cache miss: call API and stream to disk
@@ -281,16 +428,7 @@ async def tts(req: TTSRequest):
         ) as response:
             response.stream_to_file(cache_path)
 
-        try:
-            data = {}
-            if sentence_cache.exists():
-                data = json.loads(sentence_cache.read_text(encoding="utf-8"))
-            data.setdefault("hiragana", None)
-            data.setdefault("hard_items", [])
-            data["audio_path"] = str(cache_path.relative_to(ROOT_DIR))
-            sentence_cache.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-        except Exception:
-            pass
+        save_sentence_cache(normalized_text, audio_path=audio_rel)
 
         return FileResponse(cache_path, media_type="audio/mpeg")
     except Exception as e:
@@ -306,69 +444,36 @@ async def analyze_sentence(req: AnalyzeRequest):
 
 @app.post("/api/reading_sentence")
 async def reading_sentence(req: AnalyzeRequest):
-    cache_path = sentence_cache_path(req.text)
-    reading = None
-    if cache_path.exists():
-        try:
-            data = json.loads(cache_path.read_text(encoding="utf-8"))
-            reading = data.get("hiragana")
-        except Exception:
-            pass
+    cached = load_sentence_cache(req.text)
+    reading = cached.get("hiragana")
     if reading is None:
         reading, items = analyze_sentence_internal(req.text)
-        # update cache with hiragana if available
         if reading is not None:
-            try:
-                data = {}
-                if cache_path.exists():
-                    data = json.loads(cache_path.read_text(encoding="utf-8"))
-                data["hiragana"] = reading
-                data.setdefault("hard_items", items or [])
-                cache_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-            except Exception:
-                pass
+            save_sentence_cache(req.text, hiragana=reading, hard_items=items)
     return {"reading_hiragana": reading}
 
 
 @app.post("/api/hard_items")
 async def hard_items(req: AnalyzeRequest):
-    cache_path = sentence_cache_path(req.text)
-    items = []
-    if cache_path.exists():
-        try:
-            data = json.loads(cache_path.read_text(encoding="utf-8"))
-            items = data.get("hard_items", [])
-        except Exception:
-            pass
+    cached = load_sentence_cache(req.text)
+    items = cached.get("hard_items", [])
     if not items:
         reading, items = analyze_sentence_internal(req.text)
-        try:
-            data = {}
-            if cache_path.exists():
-                data = json.loads(cache_path.read_text(encoding="utf-8"))
-            data.setdefault("hiragana", reading)
-            data["hard_items"] = items
-            cache_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-        except Exception:
-            pass
+        save_sentence_cache(req.text, hiragana=reading, hard_items=items)
     return {"items": items}
 
 
 @app.post("/api/hard_item/delete")
 async def delete_hard_item(req: AnalyzeDeleteRequest):
     """Remove a specific item (by surface) from the cached analysis for this sentence."""
-    cache_path = sentence_cache_path(req.text)
-    if not cache_path.exists():
-        return {"removed": False}
     try:
-        data = json.loads(cache_path.read_text(encoding="utf-8"))
+        data = load_sentence_cache(req.text)
         items = data.get("hard_items", [])
         surface = req.surface
         if not surface:
             return {"removed": False}
         new_items = [i for i in items if i.get("surface") != surface]
-        data["hard_items"] = new_items
-        cache_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        save_sentence_cache(req.text, hard_items=new_items)
         return {"removed": True}
     except Exception as e:
         print("Delete hard item error:", repr(e))
@@ -378,16 +483,9 @@ async def delete_hard_item(req: AnalyzeDeleteRequest):
 @app.post("/api/manual_brief")
 async def manual_brief(req: ManualBriefRequest):
     """Return a short Japanese hint for a user-selected surface in the sentence."""
-    cache_path = vocab_cache_path(req.surface)
-    # serve cached brief if present
-    if cache_path.exists():
-        try:
-            data = json.loads(cache_path.read_text(encoding="utf-8"))
-            brief = data.get("brief")
-            if brief:
-                return {"hint_ja": brief}
-        except Exception:
-            pass
+    cached = load_vocab_cache(req.surface)
+    if cached.get("brief"):
+        return {"hint_ja": cached.get("brief")}
 
     prompt = (
         "あなたは日本語上級学習者(JLPT N1+)向けのコーチです。与えられた文中の指定語について、短く要点だけ日本語で解説してください。"
@@ -406,44 +504,28 @@ async def manual_brief(req: ManualBriefRequest):
         raw = chat.choices[0].message.content or "{}"
         data = json.loads(raw)
         hint = data.get("hint_ja") or ""
-        try:
-            # cache per-word
-            cache_path.write_text(
-                json.dumps(
-                    {
-                        "surface": req.surface,
-                        "base_form": req.surface,
-                        "brief": hint,
-                        "detail": None,
-                        "examples": [],
-                    },
-                    ensure_ascii=False,
-                ),
-                encoding="utf-8",
+        # cache per-word
+        save_vocab_cache(
+            surface=req.surface,
+            base_form=req.surface,
+            brief=hint,
+            detail=None,
+            examples=[],
+        )
+        # update sentence cache hard_items list
+        s_data = load_sentence_cache(req.sentence)
+        hard_items = s_data.get("hard_items", [])
+        if not any(i.get("surface") == req.surface for i in hard_items):
+            hard_items.append(
+                {
+                    "surface": req.surface,
+                    "base_form": req.surface,
+                    "type": "word",
+                    "difficulty": 1,
+                    "hint_ja": hint,
+                }
             )
-            # update sentence cache hard_items list
-            s_path = sentence_cache_path(req.sentence)
-            s_data = {"hiragana": None, "hard_items": []}
-            if s_path.exists():
-                try:
-                    s_data = json.loads(s_path.read_text(encoding="utf-8"))
-                except Exception:
-                    s_data = {"hiragana": None, "hard_items": []}
-            hard_items = s_data.get("hard_items", [])
-            if not any(i.get("surface") == req.surface for i in hard_items):
-                hard_items.append(
-                    {
-                        "surface": req.surface,
-                        "base_form": req.surface,
-                        "type": "word",
-                        "difficulty": 1,
-                        "hint_ja": hint,
-                    }
-                )
-            s_data["hard_items"] = hard_items
-            s_path.write_text(json.dumps(s_data, ensure_ascii=False), encoding="utf-8")
-        except Exception:
-            pass
+        save_sentence_cache(req.sentence, hard_items=hard_items)
         return {"hint_ja": hint}
     except Exception as e:
         print("Manual brief error:", repr(e))
@@ -458,16 +540,9 @@ async def deep_dive(req: DeepDiveRequest):
     item_type = item.get("type") or "word"
 
     # vocab cache lookup
-    vpath = vocab_cache_path(surface)
-    if vpath.exists():
-        try:
-            data = json.loads(vpath.read_text(encoding="utf-8"))
-            detail = data.get("detail")
-            examples = data.get("examples", [])
-            if detail:
-                return {"explanation": detail, "examples": examples[:2]}
-        except Exception:
-            pass
+    cached = load_vocab_cache(surface)
+    if cached.get("detail"):
+        return {"explanation": cached.get("detail"), "examples": (cached.get("examples") or [])[:2]}
 
     prompt = (
         "Given a Japanese sentence and a target item (word or grammar), provide a concise deep dive for an advanced learner (JLPT N1+). "
@@ -494,22 +569,13 @@ async def deep_dive(req: DeepDiveRequest):
         examples = data.get("examples", [])
         if not isinstance(examples, list):
             examples = []
-        try:
-            vpath.write_text(
-                json.dumps(
-                    {
-                        "surface": surface,
-                        "base_form": base_form,
-                        "brief": explanation if explanation else None,
-                        "detail": explanation,
-                        "examples": examples,
-                    },
-                    ensure_ascii=False,
-                ),
-                encoding="utf-8",
-            )
-        except Exception:
-            pass
+        save_vocab_cache(
+            surface=surface,
+            base_form=base_form,
+            brief=explanation if explanation else None,
+            detail=explanation,
+            examples=examples,
+        )
     except Exception as e:
         print("Deep dive error:", repr(e))
         raise HTTPException(status_code=500, detail="Deep dive failed.")
@@ -520,19 +586,35 @@ async def deep_dive(req: DeepDiveRequest):
 @app.get("/api/vocab_list")
 async def vocab_list():
     entries: list[dict] = []
-    for path in VOCAB_CACHE_DIR.glob("*.json"):
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            entries.append(
-                {
-                    "surface": data.get("surface", ""),
-                    "base_form": data.get("base_form") or data.get("surface", ""),
-                    "brief": data.get("brief"),
-                    "detail": data.get("detail"),
-                }
-            )
-        except Exception:
-            continue
+    try:
+        with get_session() as session:
+            rows = session.exec(select(VocabEntryCache)).all()
+            for r in rows:
+                entries.append(
+                    {
+                        "surface": r.surface,
+                        "base_form": r.base_form or r.surface,
+                        "brief": r.brief,
+                        "detail": r.detail,
+                    }
+                )
+    except Exception as e:
+        print("DB vocab_list error:", repr(e))
+    # fallback to JSON if DB empty
+    if not entries:
+        for path in VOCAB_CACHE_DIR.glob("*.json"):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                entries.append(
+                    {
+                        "surface": data.get("surface", ""),
+                        "base_form": data.get("base_form") or data.get("surface", ""),
+                        "brief": data.get("brief"),
+                        "detail": data.get("detail"),
+                    }
+                )
+            except Exception:
+                continue
     # sort alphabetically by surface for stability
     entries.sort(key=lambda x: x.get("surface", ""))
     return {"entries": entries}
@@ -566,11 +648,8 @@ async def tts_example(req: TTSExampleRequest):
 
     # update vocab cache for surface if provided
     if req.surface:
-        vpath = vocab_cache_path(req.surface)
         try:
-            data = {"surface": req.surface, "base_form": req.surface}
-            if vpath.exists():
-                data = json.loads(vpath.read_text(encoding="utf-8"))
+            data = load_vocab_cache(req.surface)
             examples = data.get("examples", [])
             # find matching example jp text and attach audio_path
             updated = False
@@ -581,11 +660,53 @@ async def tts_example(req: TTSExampleRequest):
             if not updated:
                 examples.append({"jp": text, "en": "", "audio_path": f"/tts_cache/{filename}"})
             data["examples"] = examples
-            vpath.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+            save_vocab_cache(
+                surface=data.get("surface") or req.surface,
+                base_form=data.get("base_form") or req.surface,
+                brief=data.get("brief"),
+                detail=data.get("detail"),
+                examples=examples,
+            )
         except Exception as e:
             print("Update vocab with audio failed:", repr(e))
 
     return {"audio_url": f"/tts_cache/{filename}"}
+
+
+@app.post("/api/reading_word")
+async def reading_word(req: ReadingWordRequest):
+    surface = req.surface.strip()
+    if not surface:
+        raise HTTPException(status_code=400, detail="surface required")
+    # in-memory cache first
+    if surface in READING_CACHE:
+        return {"reading": READING_CACHE[surface]}
+    # vocab cache (json/db) fallback
+    cached = load_vocab_cache(surface)
+    if cached.get("brief") and "読み" in (cached.get("brief") or ""):
+        # heuristic skip; not reliable
+        pass
+    reading = None
+    try:
+        chat = client.chat.completions.create(
+            model="gpt-4o-mini",
+            temperature=0.1,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": "Return ONLY JSON like {\"reading\":\"<hiragana>\"}. Use hiragana only."},
+                {"role": "user", "content": f"次の日本語の語の読みをひらがなだけで返してください: {surface}"},
+            ],
+        )
+        raw = chat.choices[0].message.content or "{}"
+        data = json.loads(raw)
+        reading = data.get("reading")
+    except Exception as e:
+        print("reading_word error:", repr(e))
+        reading = None
+
+    if reading:
+        READING_CACHE[surface] = reading
+    return {"reading": reading}
 
 
 @app.get("/api/source_list")

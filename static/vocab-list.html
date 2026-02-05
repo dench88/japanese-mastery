@@ -74,6 +74,19 @@
     <script>
       const bodyEl = document.getElementById("vocab-body");
       document.getElementById("return-btn").onclick = () => {
+        const params = new URLSearchParams(window.location.search);
+        const back = params.get("from");
+        if (back) {
+          window.location.href = decodeURIComponent(back);
+          return;
+        }
+        try {
+          const last = localStorage.getItem("last_main_url");
+          if (last) {
+            window.location.href = last;
+            return;
+          }
+        } catch (_) {}
         window.location.href = "/";
       };
 
