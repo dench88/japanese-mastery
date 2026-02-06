@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <title>RAW 資料</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      body {
+        font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+        margin: 0;
+        padding: 1rem;
+        background: #fafafa;
+        color: #222;
+      }
+      h1 {
+        margin: 0 0 1rem 0;
+        font-size: 1.35rem;
+      }
+      button {
+        padding: 0.45rem 0.8rem;
+        font-size: 0.95rem;
+        border: 1px solid #ccc;
+        background: #fff;
+        cursor: pointer;
+      }
+      .list {
+        display: grid;
+        gap: 0.6rem;
+      }
+      .row {
+        background: #fff;
+        border: 1px solid #e5e5e5;
+        border-radius: 8px;
+        padding: 0.65rem 0.75rem;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+      .row span {
+        word-break: break-all;
+      }
+      .size {
+        color: #777;
+        font-size: 0.85rem;
+        margin-left: 0.5rem;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>原資料</h1>
+    <div class="list" id="list">読込み中…</div>
+    <div style="margin-top:1rem; display:flex; gap:0.5rem;">
+      <button id="back-btn">資料一覧へ戻る</button>
+    </div>
+    <script>
+      const listEl = document.getElementById("list");
+      document.getElementById("back-btn").onclick = () => {
+        window.location.href = "/static/sources.html";
+      };
+
+      async function loadRaw() {
+        try {
+          const res = await fetch("/api/raw_list");
+          if (!res.ok) {
+            listEl.textContent = "取得エラー";
+            return;
+          }
+          const data = await res.json();
+          const files = data.files || [];
+          if (!files.length) {
+            listEl.textContent = "ファイルがありません";
+            return;
+          }
+          listEl.innerHTML = files
+            .map(
+              (f) =>
+                `<div class="row">
+                  <span>${escapeHtml(f.name)} <span class="size">(${formatSize(f.size)})</span></span>
+                  <a href="/api/raw_file?name=${encodeURIComponent(f.name)}" download>ダウンロード</a>
+                </div>`
+            )
+            .join("");
+        } catch (err) {
+          console.error(err);
+          listEl.textContent = "取得エラー";
+        }
+      }
+
+      function escapeHtml(str) {
+        return (str || "")
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;");
+      }
+
+      function formatSize(bytes) {
+        if (bytes === 0 || bytes == null) return "0 B";
+        const units = ["B", "KB", "MB", "GB"];
+        let i = 0;
+        let n = bytes;
+        while (n >= 1024 && i < units.length - 1) {
+          n /= 1024;
+          i++;
+        }
+        return n.toFixed(n >= 10 || i === 0 ? 0 : 1) + " " + units[i];
+      }
+
+      loadRaw();
+    </script>
+  </body>
+  </html>

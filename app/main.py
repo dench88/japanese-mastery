@@ -4,6 +4,7 @@ import re
 import json
 import hashlib
 import shutil
+import sqlite3
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.responses import FileResponse, RedirectResponse
@@ -24,6 +25,8 @@ from app.db_models import (
     SentenceCache,
     VocabEntryCache,
     SourceMaterial,
+    UserSettings,
+    DB_PATH,
 )
 
 # --- paths & env ---
@@ -54,6 +57,13 @@ VOCAB_CACHE_DIR = ROOT_DIR / "vocab_cache"
 VOCAB_CACHE_DIR.mkdir(exist_ok=True)
 RECORDINGS_DIR = ROOT_DIR / "recordings"
 RECORDINGS_DIR.mkdir(exist_ok=True)
+RAW_DIR = ROOT_DIR / "content" / "raw"
+RAW_DIR.mkdir(parents=True, exist_ok=True)
+RAW_ALLOWED_EXTS = {".pdf", ".txt", ".md", ".docx", ".zip"}
+
+# --- user handling (single-user stub) ---
+def get_current_user_id() -> str:
+    return "local"
 
 # --- OpenAI client (single instance) ---
 api_key = os.getenv("OPENAI_API_KEY")
@@ -63,6 +73,25 @@ client = OpenAI(api_key=api_key)
 
 app = FastAPI()
 init_db()
+# ensure legacy DB has translations column
+def _ensure_translations_column():
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("PRAGMA table_info(sentencecache)")
+        cols = [c[1] for c in cur.fetchall()]
+        if "translations_json" not in cols:
+            cur.execute("ALTER TABLE sentencecache ADD COLUMN translations_json TEXT")
+            conn.commit()
+    except Exception as e:
+        print("DB column check error:", repr(e))
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+_ensure_translations_column()
 
 # serve static files
 app.mount("/static", StaticFiles(directory=ROOT_DIR / "static"), name="static")
@@ -116,6 +145,33 @@ class SourceRecordResponse(BaseModel):
     audio_path: str | None = None
     category: str | None = None
 
+
+class SettingsResponse(BaseModel):
+    default_voice: str = "nova"
+    tts_speed: float = SPEED_DEFAULT
+    show_fg: bool = False
+    show_hg: bool = False
+    default_source: str | None = None
+    font_scale: float = 1.0
+    native_lang: str | None = "en"
+
+
+class TranslateRequest(BaseModel):
+    text: str
+    target_lang: str = "en"
+
+
+class TranslateResponse(BaseModel):
+    translation: str
+
+
+class DeleteSentenceRequest(BaseModel):
+    text: str
+
+
+class CleanSourceRequest(BaseModel):
+    path: str
+
 class ManualBriefRequest(BaseModel):
     sentence: str
     surface: str
@@ -159,7 +215,7 @@ def vocab_hash(surface: str) -> str:
 def load_sentence_cache(sentence: str) -> dict:
     """DB first, fallback to JSON. Returns dict with hiragana, hard_items, audio_path, sentence."""
     h = sentence_hash(sentence)
-    data = {"sentence": sentence, "hiragana": None, "hard_items": [], "audio_path": None}
+    data = {"sentence": sentence, "hiragana": None, "reading_ruby": None, "hard_items": [], "audio_path": None, "translations": {}}
     with get_session() as session:
         row = session.get(SentenceCache, h)
         if row:
@@ -167,8 +223,10 @@ def load_sentence_cache(sentence: str) -> dict:
             data.update(
                 {
                     "hiragana": dbd.get("hiragana"),
+                    "reading_ruby": None,  # DB schema has no ruby column; only available via JSON cache
                     "hard_items": dbd.get("hard_items", []),
                     "audio_path": dbd.get("audio_path"),
+                    "translations": dbd.get("translations", {}),
                 }
             )
             return data
@@ -180,8 +238,10 @@ def load_sentence_cache(sentence: str) -> dict:
             data.update(
                 {
                     "hiragana": cached.get("hiragana"),
+                    "reading_ruby": cached.get("reading_ruby"),
                     "hard_items": cached.get("hard_items", []),
                     "audio_path": cached.get("audio_path"),
+                    "translations": cached.get("translations", {}),
                 }
             )
         except Exception:
@@ -189,27 +249,36 @@ def load_sentence_cache(sentence: str) -> dict:
     return data
 
 
-def save_sentence_cache(sentence: str, hiragana=None, hard_items=None, audio_path=None):
+def save_sentence_cache(sentence: str, hiragana=None, reading_ruby=None, hard_items=None, audio_path=None, translations=None):
     """Persist to DB and mirror JSON for backward compatibility."""
     h = sentence_hash(sentence)
     # merge with existing values
     existing = load_sentence_cache(sentence)
     if hiragana is not None:
         existing["hiragana"] = hiragana
+    if reading_ruby is not None:
+        existing["reading_ruby"] = reading_ruby
     if hard_items is not None:
         existing["hard_items"] = hard_items
     if audio_path is not None:
         existing["audio_path"] = audio_path
+    if translations is not None:
+        existing["translations"] = translations
     with get_session() as session:
-        upsert_sentence(
-            session,
-            sentence_hash=h,
-            sentence_text=sentence,
-            hiragana=existing.get("hiragana"),
-            audio_path=existing.get("audio_path"),
-            hard_items=existing.get("hard_items") or [],
-        )
-        session.commit()
+        try:
+            upsert_sentence(
+                session,
+                sentence_hash=h,
+                sentence_text=sentence,
+                hiragana=existing.get("hiragana"),
+                audio_path=existing.get("audio_path"),
+                hard_items=existing.get("hard_items") or [],
+                translations=existing.get("translations") or {},
+            )
+            session.commit()
+        except Exception as e:
+            # if DB schema missing column, skip DB write but continue JSON cache
+            print("save_sentence_cache DB write error:", repr(e))
     # mirror JSON
     path = sentence_cache_path(sentence)
     try:
@@ -218,8 +287,10 @@ def save_sentence_cache(sentence: str, hiragana=None, hard_items=None, audio_pat
                 {
                     "sentence": sentence,
                     "hiragana": existing.get("hiragana"),
+                    "reading_ruby": existing.get("reading_ruby"),
                     "hard_items": existing.get("hard_items") or [],
                     "audio_path": existing.get("audio_path"),
+                    "translations": existing.get("translations") or {},
                 },
                 ensure_ascii=False,
             ),
@@ -227,6 +298,24 @@ def save_sentence_cache(sentence: str, hiragana=None, hard_items=None, audio_pat
         )
     except Exception:
         pass
+
+
+def delete_sentence_cache(sentence: str):
+    """Remove cached data for one sentence (DB + JSON)."""
+    h = sentence_hash(sentence)
+    # delete DB row
+    with get_session() as session:
+        row = session.get(SentenceCache, h)
+        if row:
+            session.delete(row)
+            session.commit()
+    # delete JSON cache file if present
+    path = sentence_cache_path(sentence)
+    if path.exists():
+        try:
+            path.unlink()
+        except Exception:
+            pass
 
 
 def load_vocab_cache(surface: str) -> dict:
@@ -366,25 +455,44 @@ def ensure_text_path(text: str, preferred_name: str | None = None) -> str:
     return candidate.relative_to(ROOT_DIR).as_posix()
 
 
+def clean_japanese_spacing(text: str) -> str:
+    """Normalize superfluous spaces around Japanese punctuation/quotes."""
+    # collapse multiple spaces
+    text = re.sub(r"[ \t]+", " ", text)
+    # remove spaces before Japanese punctuation and quotes
+    text = re.sub(r"\s+([、。！？「」『』（）〔〕［］])", r"\1", text)
+    # remove spaces after opening quotes/brackets
+    text = re.sub(r"([「『（〔［])\s+", r"\1", text)
+    # collapse spaces around ASCII punctuation commonly seen in PDFs
+    text = re.sub(r"\s+([,.;:])", r"\1", text)
+    text = re.sub(r"([\(])\s+", r"\1", text)
+    # trim extraneous spaces at line starts/ends
+    text = "\n".join([ln.strip() for ln in text.splitlines()])
+    return text
+
+
 # --- shared analysis helper (reading + hard items) ---
 def analyze_sentence_internal(sentence: str):
     normalized_text = sentence.strip()
     cached = load_sentence_cache(normalized_text)
     if cached.get("hiragana") is not None and isinstance(cached.get("hard_items"), list):
-        return cached["hiragana"], cached.get("hard_items", [])
+        return cached["hiragana"], cached.get("reading_ruby"), cached.get("hard_items", [])
 
     prompt = (
         "You are a Japanese language coach for advanced learners (JLPT N1+). Given ONE Japanese sentence, do two things: "
         "1) Convert the entire sentence into hiragana (no romaji), preserving punctuation; leave katakana loanwords as katakana. "
-        "2) List the 3 most difficult items (word or grammar) for an N1+ learner. Ignore anything below N2 unless nothing harder exists. If nothing suitable, return an empty list. "
+        "2) Return ruby markup for the sentence: each word with kanji should be wrapped as <ruby><rb>漢字</rb><rt>よみ</rt></ruby>; kana-only spans stay plain. "
+        "3) List the 3 most difficult items (word or grammar) for an N1+ learner. Ignore anything below N2 unless nothing harder exists. If nothing suitable, return an empty list. "
         "Respond ONLY with JSON matching exactly this schema (all explanations in Japanese, no English words):\n"
         '{ "reading_hiragana": "<sentence rendered fully in hiragana>", '
+        '"reading_ruby": "<sentence with ruby tags>", '
         '"items": [ { "type": "word" | "grammar", "surface": "<exact span from the sentence>", '
         '"base_form": "<dictionary form or grammar label>", "reading": "<hiragana reading of the surface>", "difficulty": 1, '
         '"hint_ja": "<short explanation in Japanese>", "reason": "<why this is difficult (Japanese)>" } ] }'
     )
 
     reading = None
+    reading_ruby = None
     items: list[dict] = []
 
     try:
@@ -410,13 +518,15 @@ def analyze_sentence_internal(sentence: str):
         if not isinstance(items, list):
             items = []
         reading = data.get("reading_hiragana")
-        save_sentence_cache(normalized_text, hiragana=reading, hard_items=items)
+        reading_ruby = data.get("reading_ruby")
+        save_sentence_cache(normalized_text, hiragana=reading, reading_ruby=reading_ruby, hard_items=items)
     except Exception as e:
         print("Analyze error:", repr(e))
         reading = None
+        reading_ruby = None
         items = []
 
-    return reading, items
+    return reading, reading_ruby, items
 
 
 @app.get("/")
@@ -493,19 +603,20 @@ async def tts(req: TTSRequest):
 
 @app.post("/api/analyze_sentence", response_model=AnalyzeResponse)
 async def analyze_sentence(req: AnalyzeRequest):
-    reading, items = analyze_sentence_internal(req.text)
-    return {"reading_hiragana": reading, "items": items}
+    reading, reading_ruby, items = analyze_sentence_internal(req.text)
+    return {"reading_hiragana": reading, "items": items, "reading_ruby": reading_ruby}
 
 
 @app.post("/api/reading_sentence")
 async def reading_sentence(req: AnalyzeRequest):
     cached = load_sentence_cache(req.text)
     reading = cached.get("hiragana")
+    reading_ruby = cached.get("reading_ruby")
     if reading is None:
-        reading, items = analyze_sentence_internal(req.text)
+        reading, reading_ruby, items = analyze_sentence_internal(req.text)
         if reading is not None:
-            save_sentence_cache(req.text, hiragana=reading, hard_items=items)
-    return {"reading_hiragana": reading}
+            save_sentence_cache(req.text, hiragana=reading, reading_ruby=reading_ruby, hard_items=items)
+    return {"reading_hiragana": reading, "reading_ruby": reading_ruby}
 
 
 @app.post("/api/hard_items")
@@ -764,9 +875,126 @@ async def reading_word(req: ReadingWordRequest):
     return {"reading": reading}
 
 
+@app.post("/api/translate_sentence", response_model=TranslateResponse)
+async def translate_sentence(req: TranslateRequest):
+    text = req.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text is required")
+    target = (req.target_lang or "en").lower()
+    cache = load_sentence_cache(text)
+    translations = cache.get("translations") or {}
+    if target in translations:
+        return {"translation": translations[target]}
+    try:
+        chat = client.chat.completions.create(
+            model="gpt-4o-mini",
+            temperature=0.2,
+            messages=[
+                {"role": "system", "content": f"Translate the following text into {target}. Return only the translation."},
+                {"role": "user", "content": text},
+            ],
+        )
+        translation = chat.choices[0].message.content or ""
+        translations[target] = translation
+        save_sentence_cache(text, translations=translations)
+        return {"translation": translation}
+    except Exception as e:
+        print("translate error:", repr(e))
+        raise HTTPException(status_code=500, detail="translation failed")
+
+
+@app.post("/api/sentence/delete")
+async def delete_sentence(req: DeleteSentenceRequest):
+    text = req.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text is required")
+    delete_sentence_cache(text)
+    return {"deleted": True}
+
+
+@app.post("/api/clean_source")
+async def clean_source(req: CleanSourceRequest):
+    rel_path = req.path.strip()
+    if not rel_path:
+        raise HTTPException(status_code=400, detail="path is required")
+    target = ROOT_DIR / rel_path
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="file not found")
+    try:
+        original = target.read_text(encoding="utf-8")
+        cleaned = clean_japanese_spacing(original)
+        target.write_text(cleaned, encoding="utf-8")
+        return {"cleaned": True, "bytes": len(cleaned)}
+    except Exception as e:
+        print("clean_source error:", repr(e))
+        raise HTTPException(status_code=500, detail="clean failed")
+
+
 @app.get("/api/source_list")
 async def source_list():
     return {"sources": list_sources()}
+
+
+@app.get("/api/raw_list")
+async def raw_list():
+    files = []
+    for p in RAW_DIR.iterdir():
+        if p.is_file() and p.suffix.lower() in RAW_ALLOWED_EXTS:
+            files.append({"name": p.name, "path": p.relative_to(ROOT_DIR).as_posix(), "size": p.stat().st_size})
+    files.sort(key=lambda x: x["name"])
+    return {"files": files}
+
+
+@app.get("/api/raw_file")
+async def raw_file(name: str):
+    # security: do not allow path traversal
+    target = RAW_DIR / name
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="file not found")
+    if target.suffix.lower() not in RAW_ALLOWED_EXTS:
+        raise HTTPException(status_code=403, detail="extension not allowed")
+    return FileResponse(target)
+
+
+def get_user_settings(session: Session, user_id: str) -> SettingsResponse:
+    row = session.get(UserSettings, user_id)
+    if not row:
+        return SettingsResponse()
+    return SettingsResponse(
+        default_voice=row.default_voice or "nova",
+        tts_speed=row.tts_speed if row.tts_speed is not None else SPEED_DEFAULT,
+        show_fg=bool(row.show_fg) if row.show_fg is not None else False,
+        show_hg=bool(row.show_hg) if row.show_hg is not None else False,
+        default_source=row.default_source,
+        font_scale=row.font_scale if row.font_scale is not None else 1.0,
+        native_lang=row.native_lang or "en",
+    )
+
+
+@app.get("/api/settings", response_model=SettingsResponse)
+async def get_settings():
+    user_id = get_current_user_id()
+    with get_session() as session:
+        return get_user_settings(session, user_id)
+
+
+@app.post("/api/settings", response_model=SettingsResponse)
+async def save_settings(settings: SettingsResponse):
+    user_id = get_current_user_id()
+    with get_session() as session:
+        row = session.get(UserSettings, user_id)
+        if not row:
+            row = UserSettings(user_id=user_id)
+            session.add(row)
+        row.default_voice = settings.default_voice
+        row.tts_speed = settings.tts_speed
+        row.show_fg = settings.show_fg
+        row.show_hg = settings.show_hg
+        row.default_source = settings.default_source
+        row.font_scale = settings.font_scale
+        row.native_lang = settings.native_lang
+        session.commit()
+        return get_user_settings(session, user_id)
 
 
 @app.post("/api/source_record", response_model=SourceRecordResponse)

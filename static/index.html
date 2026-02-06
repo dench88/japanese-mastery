@@ -80,15 +80,21 @@
         font-weight: 600;
       }
 
+      :root {
+        --sentence-scale: 1;
+      }
+
       .sentence-box {
         border: 1px solid #f7cfa0;
         border-radius: 8px;
         padding: 1rem;
         min-height: 0;
+        max-height: 40vh;
+        overflow-y: auto;
         background: linear-gradient(145deg, #fff7ee, #ffe9cf);
         white-space: pre-wrap;
-        line-height: 2.0;
-        font-size: 1.35rem;
+        line-height: calc(1.9 * var(--sentence-scale));
+        font-size: calc(1.28rem * var(--sentence-scale));
         font-family: "Noto Serif JP", "Hiragino Mincho ProN", "Yu Mincho", serif;
         box-shadow: 0 4px 14px rgba(0, 0, 0, 0.06);
       }
@@ -112,6 +118,22 @@
         padding: 0.25rem 0.5rem;
         font-size: 0.85rem;
         margin-left: 0.25rem;
+        line-height: 1.15;
+      }
+      /* keep action buttons uniform size */
+      .mini-btn.deep-btn,
+      .mini-btn.delete-btn,
+      .mini-btn.deep-manual,
+      .mini-btn.delete-manual {
+        padding: 0.32rem 0.6rem; /* consistent feel */
+        font-size: 0.85rem;
+        min-width: 64px;
+        text-align: center;
+        vertical-align: middle;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        line-height: 1.15;
       }
 
       .btn-active {
@@ -184,6 +206,27 @@
         margin-bottom: 0.35rem;
       }
 
+      .deep-block {
+        margin-top: 0.75rem;
+        padding: 0.75rem;
+        border: 1px solid #e4e4e4;
+        border-radius: 10px;
+        background: #fff;
+        max-height: 40vh;
+        overflow-y: auto;
+      }
+
+      .deep-close {
+        border: 1px solid #ccc;
+        background: #f7f7f7;
+        padding: 0.25rem 0.5rem;
+        font-size: 0.85rem;
+        border-radius: 6px;
+        cursor: pointer;
+        float: right;
+        margin-left: 0.5rem;
+      }
+
       @media (max-width: 800px) {
         .layout {
           flex-direction: column;
@@ -223,11 +266,13 @@
               <option value="cedar">cedar</option>
               <option value="onyx">onyx</option>
             </select>
-            <button id="vocab-button">単語</button>
-            <button id="add-vocab">追加</button>
-            <button id="toggle-fg">FG</button>
-            <button id="toggle-hiragana">HG</button>
-            <button id="vocab-list-btn">語彙</button>
+          <button id="vocab-button">単語</button>
+          <button id="reset-sentence">リセット</button>
+          <button id="add-vocab">追加</button>
+          <button id="toggle-fg">FG</button>
+          <button id="toggle-hiragana">HG</button>
+          <button id="translate-btn">Translate</button>
+          <button id="vocab-list-btn">語彙</button>
           </div>
           <div id="sentence-meta" style="font-size: 0.85rem; color: #666">
             文 <span id="sentence-index">-</span> / <span id="sentence-total">-</span>
@@ -235,6 +280,7 @@
           <div id="current-sentence" class="sentence-box">
             Loading sentence...
           </div>
+          <div id="translation-sentence" style="margin-top:0.35rem; color:#444; font-size:1rem; white-space: pre-wrap;"></div>
           <div id="hiragana-sentence" style="margin-top: 0.35rem; color: #666; font-size: 0.95rem;"></div>
 
           <div id="status"></div>
@@ -250,6 +296,7 @@
       const fullTextEl = document.getElementById("full-text");
       const currentSentenceEl = document.getElementById("current-sentence");
       const hiraganaEl = document.getElementById("hiragana-sentence");
+      const translationEl = document.getElementById("translation-sentence");
       const sentenceIndexEl = document.getElementById("sentence-index");
       const sentenceTotalEl = document.getElementById("sentence-total");
       const statusEl = document.getElementById("status");
@@ -259,15 +306,18 @@
       const toggleHiraBtn = document.getElementById("toggle-hiragana");
       const toggleFgBtn = document.getElementById("toggle-fg");
       const vocabBtn = document.getElementById("vocab-button");
+      const resetBtn = document.getElementById("reset-sentence");
       const vocabListBtn = document.getElementById("vocab-list-btn");
       const addVocabBtn = document.getElementById("add-vocab");
       const sourcesBtn = document.getElementById("sources-btn");
       const voiceSelect = document.getElementById("voice-select");
+      const translateBtn = document.getElementById("translate-btn");
 
       const speakBtn = document.getElementById("speak-sentence");
       const prevBtn = document.getElementById("prev-sentence");
       const nextBtn = document.getElementById("next-sentence");
 
+      const SPEED_DEFAULT = 1.1;
       let currentIndex = 0;
       let currentSentence = "";
       let totalSentences = 0;
@@ -287,6 +337,11 @@
       let startIndex = Number.parseInt(params.get("idx") || "0");
       if (Number.isNaN(startIndex) || startIndex < 0) startIndex = 0;
       let currentVoice = voiceSelect.value || "nova";
+      let currentSpeed = SPEED_DEFAULT;
+      let nativeLang = "en";
+      let currentTranslation = "";
+      let showTranslation = false;
+      let currentRuby = "";
 
       async function loadSentences() {
         try {
@@ -317,18 +372,24 @@
           }
           const data = await res.json();
           currentIndex = data.index;
-          currentSentence = data.sentence;
-          totalSentences = data.total;
+        currentSentence = data.sentence;
+        totalSentences = data.total;
 
         currentSentenceEl.textContent = currentSentence;
         hiraganaEl.textContent = "";
         currentReading = "";
+        currentRuby = "";
         showFurigana = false;
         showHiragana = false;
+        showTranslation = false;
         toggleFgBtn.textContent = "FG";
         setActive(toggleFgBtn, false);
         toggleHiraBtn.textContent = "HG";
         setActive(toggleHiraBtn, false);
+        setActive(translateBtn, false);
+        currentTranslation = "";
+        translationEl.textContent = "";
+        translationEl.style.display = "none";
         hiraganaEl.style.display = showHiragana ? "block" : "none";
         sentenceIndexEl.textContent = currentIndex + 1; // 1-based for humans
         sentenceTotalEl.textContent = totalSentences;
@@ -361,6 +422,7 @@
             body: JSON.stringify({
               text: currentSentence,
               voice: currentVoice,
+              speed: currentSpeed,
               model: "gpt-4o-mini-tts",
             }),
           });
@@ -519,6 +581,36 @@
         window.location.href = "/static/sources.html";
       };
 
+      resetBtn.onclick = async () => {
+        if (!currentSentence) return;
+        const ok = window.confirm("この文のキャッシュを削除しますか？");
+        if (!ok) return;
+        statusEl.textContent = "削除中…";
+        try {
+          const res = await fetch("/api/sentence/delete", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text: currentSentence }),
+          });
+          if (!res.ok) throw new Error("delete failed");
+          // clear local state for this sentence
+          currentReading = "";
+          currentRuby = "";
+          currentItems = [];
+          currentTranslation = "";
+          showTranslation = false;
+          setActive(translateBtn, false);
+          translationEl.textContent = "";
+          translationEl.style.display = "none";
+          hiraganaEl.textContent = "";
+          renderSentenceDisplay();
+          statusEl.textContent = "削除しました";
+        } catch (err) {
+          console.error(err);
+          statusEl.textContent = "削除に失敗しました";
+        }
+      };
+
       hardestEl.addEventListener("click", async (e) => {
         const btn = e.target;
         // deep dive on fetched item
@@ -565,6 +657,10 @@
       // handle example play clicks rendered inside the deep-dive block
       deepDiveEl.addEventListener("click", async (e) => {
         const btn = e.target;
+        if (btn.classList.contains("deep-close")) {
+          deepDiveEl.innerHTML = "";
+          return;
+        }
         if (btn.classList.contains("example-play")) {
           const text = btn.dataset.text || "";
           const surface = btn.dataset.surface || "";
@@ -596,12 +692,57 @@
           const wordHeader = buildWordHeader(item);
           const examplesHtml = renderExamples(examples, item.surface || "");
           const headerLine = brief ? `<div class="deep-brief">${brief}</div>` : "";
-          deepDiveEl.innerHTML = `${wordHeader}${headerLine}<div class="deep-expl">${explanation}</div>${examplesHtml}`;
+          deepDiveEl.innerHTML = `<button class="deep-close" aria-label="close">×</button>${wordHeader}${headerLine}<div class="deep-expl">${explanation}</div>${examplesHtml}`;
         } catch (err) {
           console.error("Deep dive fetch error:", err);
           deepDiveEl.textContent = "取得エラー";
         }
       }
+
+      translateBtn.onclick = async () => {
+        if (!currentSentence) return;
+        showTranslation = !showTranslation;
+        setActive(translateBtn, showTranslation);
+
+        if (showTranslation) {
+          if (currentTranslation) {
+            translationEl.textContent = currentTranslation;
+            translationEl.style.display = "block";
+            return;
+          }
+          statusEl.textContent = "翻訳中…";
+          try {
+            const res = await fetch("/api/translate_sentence", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ text: currentSentence, target_lang: nativeLang }),
+            });
+            if (!res.ok) {
+              translationEl.textContent = "";
+              translationEl.style.display = "none";
+              statusEl.textContent = "翻訳エラー";
+              showTranslation = false;
+              setActive(translateBtn, false);
+              return;
+            }
+            const data = await res.json();
+            currentTranslation = data.translation || "";
+            translationEl.textContent = currentTranslation;
+            translationEl.style.display = "block";
+            statusEl.textContent = "";
+          } catch (err) {
+            console.error(err);
+            translationEl.textContent = "";
+            translationEl.style.display = "none";
+            statusEl.textContent = "翻訳エラー";
+            showTranslation = false;
+            setActive(translateBtn, false);
+          }
+        } else {
+          translationEl.textContent = "";
+          translationEl.style.display = "none";
+        }
+      };
 
       async function fetchHardItems(sentence) {
         hardestEl.textContent = "";
@@ -644,6 +785,7 @@
           const data = await res.json();
           if (data.reading_hiragana) {
             currentReading = data.reading_hiragana;
+            currentRuby = data.reading_ruby || "";
             if (!suppressHiraDisplay) {
               hiraganaEl.textContent = currentReading;
               hiraganaEl.style.display = showHiragana ? "block" : "none";
@@ -709,7 +851,7 @@
         const explanation = item.explanation || item.brief || "説明なし";
         const wordHeader = buildWordHeader(item);
         const headerLine = brief ? `<div class="deep-brief">${brief}</div>` : "";
-        deepDiveEl.innerHTML = `${wordHeader}${headerLine}<div class="deep-expl">${explanation}</div>${examplesHtml}`;
+        deepDiveEl.innerHTML = `<button class="deep-close" aria-label="close">×</button>${wordHeader}${headerLine}<div class="deep-expl">${explanation}</div>${examplesHtml}`;
       }
 
       async function fetchManualDeepDive(item) {
@@ -766,7 +908,7 @@
           const res = await fetch("/api/tts_example", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ text, surface, voice: currentVoice }),
+            body: JSON.stringify({ text, surface, voice: currentVoice, speed: currentSpeed }),
           });
           if (!res.ok) {
             deepDiveEl.textContent = "音声取得エラー";
@@ -798,7 +940,9 @@
       }
 
       function renderSentenceDisplay() {
-        if (showFurigana && currentReading) {
+        if (showFurigana && currentRuby) {
+          currentSentenceEl.innerHTML = currentRuby;
+        } else if (showFurigana && currentReading) {
           currentSentenceEl.innerHTML = buildRuby(currentSentence, currentReading);
         } else {
           currentSentenceEl.textContent = currentSentence;
@@ -836,9 +980,9 @@
         }
       }
 
-      function isKanaOrPunct(ch) {
-        // treat kana plus common Japanese punctuation (including quotes) as anchors
-        return /[ぁ-ゟ゠-ヿー、。！？「」『』（）〔〕［］\s]/.test(ch);
+      function isAnchor(ch) {
+        // anchor on punctuation/quotes/whitespace only (exclude kana to keep them inside chunks)
+        return /[、。！？「」『』（）〔〕［］\s]/.test(ch);
       }
 
       function buildRuby(sentence, reading) {
@@ -846,14 +990,38 @@
         let ri = 0;
         let out = "";
         const s = sentence;
-        const r = reading;
+        const r = reading.replace(/\s+/g, ""); // drop stray spaces in reading
 
-        const makeChunk = (rb, rt) =>
-          rb.length ? `<ruby><rb>${escapeHtml(rb)}</rb><rt>${escapeHtml(rt)}</rt></ruby>` : "";
+        const isKanaOnly = (str) => /^[ぁ-ゟ゠-ヿー]+$/.test(str);
+        const hasAscii = (str) => /[A-Za-z0-9]/.test(str);
+        const isAsciiChar = (ch) => /[A-Za-z0-9]/.test(ch);
+        const isKanaChar = (ch) => /[ぁ-ゟ゠-ヿー]/.test(ch);
+        const makeChunk = (rb, rt) => {
+          if (!rb.length) return "";
+          if (!rt || rb === rt || isKanaOnly(rb) || hasAscii(rb) || hasAscii(rt)) return escapeHtml(rb);
+          return `<ruby><rb>${escapeHtml(rb)}</rb><rt>${escapeHtml(rt)}</rt></ruby>`;
+        };
 
         while (si < s.length) {
+          // If current surface char is ASCII, emit it plainly and, if reading matches, advance reading too
+          if (isAsciiChar(s[si])) {
+            out += escapeHtml(s[si]);
+            if (ri < r.length && r[ri] === s[si]) {
+              ri += 1;
+            }
+            si += 1;
+            continue;
+          }
+
+          // Skip whitespace in sentence (keep it as-is)
+          if (/\s/.test(s[si])) {
+            out += escapeHtml(s[si]);
+            si += 1;
+            continue;
+          }
+
           // Plain anchor: kana/punct matches directly
-          if (ri < r.length && isKanaOrPunct(s[si]) && s[si] === r[ri]) {
+          if (ri < r.length && isAnchor(s[si]) && s[si] === r[ri]) {
             out += escapeHtml(s[si]);
             si += 1;
             ri += 1;
@@ -869,7 +1037,7 @@
           let tmpSi = si;
           while (tmpSi < s.length) {
             const ch = s[tmpSi];
-            if (isKanaOrPunct(ch)) {
+            if (isAnchor(ch)) {
               const idxR = r.indexOf(ch, ri);
               if (idxR !== -1) {
                 anchorPosS = tmpSi;
@@ -933,8 +1101,38 @@
         await loadSentence(idx);
       });
 
+      async function applySettings() {
+        try {
+          const res = await fetch("/api/settings");
+          if (res.ok) {
+            const s = await res.json();
+            currentVoice = s.default_voice || currentVoice;
+            currentSpeed = typeof s.tts_speed === "number" ? s.tts_speed : currentSpeed;
+            nativeLang = s.native_lang || nativeLang;
+            translateBtn.textContent = nativeLang === "ja" ? "翻訳" : "Translate";
+            if (s.font_scale) {
+              document.documentElement.style.setProperty("--sentence-scale", s.font_scale);
+            }
+            if (!selectedSource && s.default_source) {
+              selectedSource = s.default_source;
+            }
+            if (s.show_fg) {
+              showFurigana = true;
+              setActive(toggleFgBtn, true);
+            }
+            if (s.show_hg) {
+              showHiragana = true;
+              setActive(toggleHiraBtn, true);
+            }
+          }
+        } catch (err) {
+          console.error("settings load error", err);
+        }
+      }
+
       // Initial load
       (async () => {
+        await applySettings();
         await loadSentences();
         await loadSentence(startIndex);
       })();

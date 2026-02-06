@@ -16,6 +16,7 @@ class SentenceCache(SQLModel, table=True):
     hiragana: Optional[str] = None
     audio_path: Optional[str] = None  # relative path to mp3
     hard_items_json: Optional[str] = None  # JSON string of hard_items list
+    translations_json: Optional[str] = None  # JSON map lang -> translation
 
 
 class VocabEntryCache(SQLModel, table=True):
@@ -38,6 +39,17 @@ class SourceMaterial(SQLModel, table=True):
     category: Optional[str] = None
 
 
+class UserSettings(SQLModel, table=True):
+    user_id: str = Field(primary_key=True)
+    default_voice: Optional[str] = None
+    tts_speed: Optional[float] = None
+    show_fg: Optional[bool] = None
+    show_hg: Optional[bool] = None
+    default_source: Optional[str] = None
+    font_scale: Optional[float] = None
+    native_lang: Optional[str] = None
+
+
 def init_db():
     SQLModel.metadata.create_all(ENGINE)
 
@@ -57,6 +69,7 @@ def sentence_to_dict(row: SentenceCache | None) -> Optional[dict[str, Any]]:
         "hiragana": row.hiragana,
         "audio_path": row.audio_path,
         "hard_items": json.loads(row.hard_items_json or "[]"),
+        "translations": json.loads(row.translations_json or "{}"),
     }
 
 
@@ -80,14 +93,17 @@ def upsert_sentence(
     hiragana: Optional[str],
     audio_path: Optional[str],
     hard_items: Iterable[Any],
+    translations: dict[str, Any],
 ):
     hard_items_json = json.dumps(list(hard_items or []), ensure_ascii=False)
+    translations_json = json.dumps(translations or {}, ensure_ascii=False)
     existing = session.get(SentenceCache, sentence_hash)
     if existing:
         existing.sentence_text = sentence_text
         existing.hiragana = hiragana
         existing.audio_path = audio_path
         existing.hard_items_json = hard_items_json
+        existing.translations_json = translations_json
     else:
         session.add(
             SentenceCache(
@@ -96,6 +112,7 @@ def upsert_sentence(
                 hiragana=hiragana,
                 audio_path=audio_path,
                 hard_items_json=hard_items_json,
+                translations_json=translations_json,
             )
         )
 

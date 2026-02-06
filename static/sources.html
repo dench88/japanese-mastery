@@ -36,8 +36,29 @@
         align-items: center;
         justify-content: space-between;
       }
-      .row span {
-        word-break: break-all;
+      .row .left {
+        display: inline-flex;
+        gap: 0.5rem;
+        align-items: center;
+        min-width: 0;
+      }
+      .left .actions {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.4rem;
+      }
+      .title {
+        font-weight: 600;
+        word-break: break-word;
+      }
+      .cat {
+        font-size: 0.85rem;
+        color: #555;
+        background: #f0f4ff;
+        border: 1px solid #d5e2ff;
+        padding: 0.15rem 0.45rem;
+        border-radius: 999px;
+        white-space: nowrap;
       }
     </style>
   </head>
@@ -45,6 +66,8 @@
     <h1>資料一覧</h1>
     <div style="margin-bottom:0.75rem; display:flex; gap:0.5rem; flex-wrap:wrap;">
       <button id="record-btn">録音</button>
+      <button id="settings-btn">設定</button>
+      <button id="raw-btn">原資料</button>
       <span id="record-status" style="font-size:0.9rem; color:#555;"></span>
     </div>
     <div class="list" id="list">読み込み中…</div>
@@ -58,6 +81,12 @@
       };
 
       const recordBtn = document.getElementById("record-btn");
+      document.getElementById("raw-btn").onclick = () => {
+        window.location.href = "/static/raw-sources.html";
+      };
+      document.getElementById("settings-btn").onclick = () => {
+        window.location.href = "/static/settings.html";
+      };
       const recordStatus = document.getElementById("record-status");
       let mediaRecorder = null;
       let chunks = [];
@@ -127,10 +156,14 @@
               (s) => {
                 const pathVal = s.path || s.name || "";
                 return `<div class="row">
-                  <span>${escapeHtml(s.name)} ${s.category ? `<span style="color:#888;font-size:0.85rem;">(${escapeHtml(s.category)})</span>` : ""}</span>
-                  <div style="display:flex; gap:0.4rem; align-items:center;">
-                    ${s.audio_path ? `<audio controls style="max-width:180px;" src="/${s.audio_path}"></audio>` : ""}
-                    <button onclick="loadFile('${encodeURIComponent(pathVal)}')">読込</button>
+                  <div class="left">
+                    <div class="actions">
+                      <button onclick="loadFile('${encodeURIComponent(pathVal)}')">読込</button>
+                      ${s.audio_path ? `<audio controls style="max-width:180px;" src="/${s.audio_path}"></audio>` : ""}
+                    </div>
+                    <span class="title">${escapeHtml(s.name)}</span>
+                    ${s.category ? `<span class="cat">${escapeHtml(s.category)}</span>` : ""}
+                    <button class="mini-clean" onclick="cleanSource('${encodeURIComponent(pathVal)}')">整形</button>
                   </div>
                 </div>`;
               }
@@ -145,6 +178,24 @@
       function loadFile(path) {
         // pass the stored path (relative to repo root) so backend can resolve it
         window.location.href = `/static/index.html?source=${encodeURIComponent(path)}`;
+      }
+
+      async function cleanSource(path) {
+        const decoded = decodeURIComponent(path);
+        const ok = window.confirm(`このファイルの余分なスペースを整形しますか？\\n${decoded}`);
+        if (!ok) return;
+        try {
+          const res = await fetch("/api/clean_source", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ path: decoded }),
+          });
+          if (!res.ok) throw new Error("clean failed");
+          await loadSources();
+        } catch (err) {
+          console.error(err);
+          alert("整形に失敗しました");
+        }
       }
 
       function escapeHtml(str) {
