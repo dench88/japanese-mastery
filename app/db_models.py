@@ -48,6 +48,7 @@ class UserSettings(SQLModel, table=True):
     default_source: Optional[str] = None
     font_scale: Optional[float] = None
     native_lang: Optional[str] = None
+    show_native_defs: Optional[bool] = None
 
 
 def init_db():

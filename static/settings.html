@@ -40,9 +40,9 @@
     </style>
   </head>
   <body>
-    <h1>設定</h1>
+    <h1 id="title">設定</h1>
     <div class="row">
-      <label for="voice">デフォルト音声</label>
+      <label for="voice" id="label-voice">デフォルト音声</label>
       <select id="voice">
         <option value="nova">nova</option>
         <option value="sage">sage</option>
@@ -51,38 +51,39 @@
       </select>
     </div>
     <div class="row">
-      <label for="speed">TTS 速度</label>
+      <label for="speed" id="label-speed">TTS 速度</label>
       <input type="number" step="0.05" min="0.5" max="2.0" id="speed" />
     </div>
     <div class="row">
-      <label for="default-source">デフォルト資料</label>
+      <label for="default-source" id="label-source">デフォルト資料</label>
       <select id="default-source">
         <option value="">(指定なし)</option>
       </select>
     </div>
     <div class="row">
-      <label for="native-lang">母語 / 翻訳先</label>
+      <label for="native-lang" id="label-native">母語 / 翻訳先</label>
       <select id="native-lang">
         <option value="en">English</option>
-        <option value="ja">日本語</option>
         <option value="ko">한국어</option>
         <option value="zh">中文</option>
-        <option value="fr">Français</option>
-        <option value="es">Español</option>
       </select>
     </div>
     <div class="row">
-      <label for="font-scale">フォント倍率</label>
+      <label for="font-scale" id="label-font">フォント倍率</label>
       <input type="number" step="0.05" min="0.6" max="2.0" id="font-scale" />
     </div>
     <div class="row">
-      <label><input type="checkbox" id="show-fg" /> 初期表示でFGをON</label>
+      <label id="label-show-fg"><input type="checkbox" id="show-fg" /> 初期表示でFGをON</label>
     </div>
     <div class="row">
-      <label><input type="checkbox" id="show-hg" /> 初期表示でHGをON</label>
+      <label id="label-show-hg"><input type="checkbox" id="show-hg" /> 初期表示でHGをON</label>
+    </div>
+    <div class="row">
+      <label id="label-show-native"><input type="checkbox" id="show-native-defs" /> 母語の語義を表示</label>
     </div>
     <div class="row" style="margin-top:1rem; display:flex; gap:0.5rem;">
       <button id="save-btn">保存</button>
+      <button id="reload-btn">再読み込み</button>
       <button id="back-btn">戻る</button>
       <button id="sources-btn">資料一覧</button>
       <span id="status" style="font-size:0.95rem; color:#555;"></span>
@@ -95,9 +96,87 @@
       const fontScaleEl = document.getElementById("font-scale");
       const showFgEl = document.getElementById("show-fg");
       const showHgEl = document.getElementById("show-hg");
+      const showNativeDefsEl = document.getElementById("show-native-defs");
       const nativeLangEl = document.getElementById("native-lang");
       const statusEl = document.getElementById("status");
       const sourcesBtn = document.getElementById("sources-btn");
+      const reloadBtn = document.getElementById("reload-btn");
+
+      const labels = {
+        en: {
+          title: "Settings",
+          voice: "Default voice",
+          speed: "TTS speed",
+          source: "Default source",
+          native: "Native language",
+          font: "Font scale",
+          showFg: "FG on by default",
+          showHg: "HG on by default",
+          showNative: "Display definitions in native language",
+          save: "Save",
+          reload: "Reload",
+          back: "Back",
+          sources: "Sources",
+          saving: "Saving...",
+          saved: "Saved",
+          saveFailed: "Save failed",
+        },
+        ko: {
+          title: "설정",
+          voice: "기본 음성",
+          speed: "TTS 속도",
+          source: "기본 자료",
+          native: "모국어",
+          font: "글꼴 배율",
+          showFg: "기본 FG 켜기",
+          showHg: "기본 HG 켜기",
+          showNative: "모국어 풀이 표시",
+          save: "저장",
+          reload: "새로고침",
+          back: "뒤로",
+          sources: "자료 목록",
+          saving: "저장 중...",
+          saved: "저장됨",
+          saveFailed: "저장 실패",
+        },
+        zh: {
+          title: "设置",
+          voice: "默认语音",
+          speed: "TTS 速度",
+          source: "默认资料",
+          native: "母语",
+          font: "字体倍率",
+          showFg: "默认开启 FG",
+          showHg: "默认开启 HG",
+          showNative: "显示母语释义",
+          save: "保存",
+          reload: "重载",
+          back: "返回",
+          sources: "资料列表",
+          saving: "保存中…",
+          saved: "已保存",
+          saveFailed: "保存失败",
+        },
+      };
+      let currentLocale = "en";
+
+      function applyLocale(lang) {
+        const l = labels[lang] || labels.en;
+        currentLocale = lang in labels ? lang : "en";
+        document.getElementById("title").textContent = l.title;
+        document.getElementById("label-voice").firstChild.textContent = l.voice;
+        document.getElementById("label-speed").firstChild.textContent = l.speed;
+        document.getElementById("label-source").firstChild.textContent = l.source;
+        document.getElementById("label-native").firstChild.textContent = l.native;
+        document.getElementById("label-font").firstChild.textContent = l.font;
+        document.getElementById("label-show-fg").lastChild.textContent = ` ${l.showFg}`;
+        document.getElementById("label-show-hg").lastChild.textContent = ` ${l.showHg}`;
+        document.getElementById("label-show-native").lastChild.textContent = ` ${l.showNative}`;
+        document.getElementById("save-btn").textContent = l.save;
+        document.getElementById("reload-btn").textContent = l.reload;
+        document.getElementById("back-btn").textContent = l.back;
+        document.getElementById("sources-btn").textContent = l.sources;
+      }
 
       document.getElementById("back-btn").onclick = () => {
         window.location.href = "/static/sources.html";
@@ -116,8 +195,10 @@
           show_fg: showFgEl.checked,
           show_hg: showHgEl.checked,
           native_lang: nativeLangEl.value || "en",
+          show_native_defs: showNativeDefsEl.checked,
         };
-        statusEl.textContent = "保存中…";
+        const l = labels[currentLocale] || labels.en;
+        statusEl.textContent = l.saving;
         try {
           const res = await fetch("/api/settings", {
             method: "POST",
@@ -125,11 +206,16 @@
             body: JSON.stringify(payload),
           });
           if (!res.ok) throw new Error("save failed");
-          statusEl.textContent = "保存しました";
+          statusEl.textContent = l.saved;
         } catch (err) {
           console.error(err);
-          statusEl.textContent = "保存に失敗しました";
+          statusEl.textContent = l.saveFailed;
         }
+      };
+
+      reloadBtn.onclick = async () => {
+        await document.getElementById("save-btn").onclick();
+        window.location.reload();
       };
 
       async function loadSettings() {
@@ -142,9 +228,11 @@
           showFgEl.checked = !!data.show_fg;
           showHgEl.checked = !!data.show_hg;
           nativeLangEl.value = data.native_lang || "en";
+          showNativeDefsEl.checked = data.show_native_defs !== undefined ? !!data.show_native_defs : true;
           if (data.default_source) {
             defaultSourceEl.value = data.default_source;
           }
+          applyLocale(nativeLangEl.value);
         } catch (err) {
           console.error(err);
         }

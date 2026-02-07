@@ -125,9 +125,9 @@
       .mini-btn.delete-btn,
       .mini-btn.deep-manual,
       .mini-btn.delete-manual {
-        padding: 0.32rem 0.6rem; /* consistent feel */
+        padding: 0.24rem 0.43rem; /* ~10% narrower again */
         font-size: 0.85rem;
-        min-width: 64px;
+        min-width: 47px;
         text-align: center;
         vertical-align: middle;
         display: inline-flex;
@@ -156,6 +156,23 @@
       .hard-item {
         margin-top: 0.5em;
         line-height: 1.4;
+      }
+      .hint-native {
+        margin-left: 0.35rem;
+        color: #666;
+        font-size: 0.88em;
+      }
+      .hint-native-pill {
+        display: inline-block;
+        margin-left: 0.35rem;
+        margin-right: 0.25rem;
+        padding: 0.08rem 0.4rem;
+        font-size: 0.72em;
+        border-radius: 999px;
+        background: #f0f4ff;
+        border: 1px solid #d5e2ff;
+        color: #3a4a6b;
+        vertical-align: middle;
       }
 
       .example-card {
@@ -203,6 +220,27 @@
       .deep-brief {
         font-weight: 700;
         color: #2f1b00;
+        margin-bottom: 0.35rem;
+      }
+      .word-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.5rem;
+        margin-bottom: 0.25rem;
+      }
+      .word-main {
+        font-weight: 700;
+        font-size: 1.05rem;
+      }
+      .native-block {
+        margin-top: 0.75rem;
+        padding-top: 0.6rem;
+        border-top: 1px dashed #e0e0e0;
+      }
+      .native-label {
+        font-size: 0.85rem;
+        color: #555;
         margin-bottom: 0.35rem;
       }
 
@@ -325,8 +363,10 @@
       let showHiragana = false;
       let currentItems = [];
       let currentReading = "";
+      let currentRuby = "";
       let showVocab = false;
       let showFurigana = false;
+      let currentDeepDive = null;
       let currentManualItems = [];
       const params = new URLSearchParams(window.location.search);
       let selectedSource = params.get("source") || "";
@@ -339,9 +379,9 @@
       let currentVoice = voiceSelect.value || "nova";
       let currentSpeed = SPEED_DEFAULT;
       let nativeLang = "en";
+      let showNativeDefs = true;
       let currentTranslation = "";
       let showTranslation = false;
-      let currentRuby = "";
 
       async function loadSentences() {
         try {
@@ -379,6 +419,7 @@
         hiraganaEl.textContent = "";
         currentReading = "";
         currentRuby = "";
+        currentDeepDive = null;
         showFurigana = false;
         showHiragana = false;
         showTranslation = false;
@@ -531,6 +572,7 @@
             body: JSON.stringify({
               sentence: currentSentence,
               surface: selection,
+              native_lang: showNativeDefs ? nativeLang : "ja",
             }),
           });
           if (!res.ok) throw new Error("deep dive failed");
@@ -538,6 +580,8 @@
           replaceManualItem(placeholderId, {
             surface: selection,
             hint: data.hint_ja || "説明なし",
+            hint_native: data.hint_native || "",
+            hint_native_lang: data.hint_native_lang || nativeLang,
             brief: data.hint_ja || "説明なし",
             explanation: "", // not fetched yet
             examples: [],
@@ -596,6 +640,7 @@
           // clear local state for this sentence
           currentReading = "";
           currentRuby = "";
+          currentDeepDive = null;
           currentItems = [];
           currentTranslation = "";
           showTranslation = false;
@@ -661,6 +706,45 @@
           deepDiveEl.innerHTML = "";
           return;
         }
+        if (btn.classList.contains("native-btn")) {
+          const lang = (nativeLang || "").toLowerCase();
+          if (!lang || lang === "ja" || !currentDeepDive) return;
+          if (currentDeepDive.showNative) {
+            currentDeepDive.showNative = false;
+            deepDiveEl.innerHTML = renderDeepDive(currentDeepDive);
+            return;
+          }
+          // toggle on immediately for visual feedback
+          currentDeepDive.showNative = true;
+          deepDiveEl.innerHTML = renderDeepDive(currentDeepDive);
+          if (currentDeepDive.native && currentDeepDive.native.lang === lang) {
+            return;
+          }
+          try {
+            const res = await fetch("/api/translate_deep_dive", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                explanation: currentDeepDive.explanation || "",
+                examples: currentDeepDive.examples || [],
+                target_lang: lang,
+              }),
+            });
+            if (!res.ok) throw new Error("native translate failed");
+            const data = await res.json();
+            currentDeepDive.native = {
+              lang,
+              explanation: data.explanation || "",
+              examples: Array.isArray(data.examples) ? data.examples : [],
+            };
+            deepDiveEl.innerHTML = renderDeepDive(currentDeepDive);
+          } catch (err) {
+            console.error("native translate error:", err);
+            currentDeepDive.showNative = false;
+            deepDiveEl.innerHTML = renderDeepDive(currentDeepDive);
+          }
+          return;
+        }
         if (btn.classList.contains("example-play")) {
           const text = btn.dataset.text || "";
           const surface = btn.dataset.surface || "";
@@ -689,10 +773,15 @@
           const explanation = data.explanation || "説明なし";
           const examples = Array.isArray(data.examples) ? data.examples.slice(0, 2) : [];
           const brief = item.hint_ja || item.brief || "";
-          const wordHeader = buildWordHeader(item);
-          const examplesHtml = renderExamples(examples, item.surface || "");
-          const headerLine = brief ? `<div class="deep-brief">${brief}</div>` : "";
-          deepDiveEl.innerHTML = `<button class="deep-close" aria-label="close">×</button>${wordHeader}${headerLine}<div class="deep-expl">${explanation}</div>${examplesHtml}`;
+          currentDeepDive = {
+            item,
+            explanation,
+            examples,
+            brief,
+            native: null,
+            showNative: false,
+          };
+          deepDiveEl.innerHTML = renderDeepDive(currentDeepDive);
         } catch (err) {
           console.error("Deep dive fetch error:", err);
           deepDiveEl.textContent = "取得エラー";
@@ -750,7 +839,7 @@
           const res = await fetch("/api/hard_items", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ text: sentence }),
+            body: JSON.stringify({ text: sentence, native_lang: showNativeDefs ? nativeLang : "ja" }),
           });
           if (!res.ok) {
             hardestEl.textContent = "";
@@ -810,26 +899,26 @@
         const fetchedHtml = fetchedItems
           .map(
             (i, idx) =>
-              `<div class="hard-item"><strong>${i.surface}</strong> — ${i.hint_ja || i.english_hint || "説明なし"} <button class="mini-btn deep-btn" data-idx="${idx}">詳しく</button><button class="mini-btn delete-btn" data-idx="${idx}">削除</button></div>`
+              `<div class="hard-item"><strong>${i.surface}</strong> ${formatHint(i.hint_ja || i.english_hint || "説明なし", i.hint_native, i.hint_native_lang)} <button class="mini-btn deep-btn" data-idx="${idx}">詳しく</button><button class="mini-btn delete-btn" data-idx="${idx}">削除</button></div>`
           )
           .join("");
         const manualHtml = manualItems
           .map(
             (m) =>
-              `<div class="hard-item"><strong>${m.surface}</strong> — ${cleanHint(m.brief || m.hint || m.explanation || "説明なし", m.surface)} <button class="mini-btn deep-manual" data-mid="${m.id}">詳しく</button><button class="mini-btn delete-manual" data-mid="${m.id}">削除</button></div>`
+              `<div class="hard-item"><strong>${m.surface}</strong> ${formatHint(cleanHint(m.brief || m.hint || m.explanation || "説明なし", m.surface), m.hint_native, m.hint_native_lang)} <button class="mini-btn deep-manual" data-mid="${m.id}">詳しく</button><button class="mini-btn delete-manual" data-mid="${m.id}">削除</button></div>`
           )
           .join("");
         hardestEl.innerHTML = header + fetchedHtml + manualHtml;
       }
 
-      function renderExamples(examples = [], surfaceForAudio = "") {
+      function renderExamples(examples = [], surfaceForAudio = "", withPlay = true) {
         if (!examples || !examples.length) return "";
         return (
           examples
             .map(
               (ex) =>
-                `<div class="example-card">
-                  <button class="example-play" aria-label="play" data-text="${escapeHtml(ex.jp || "")}" data-surface="${escapeHtml(surfaceForAudio)}"></button>
+                `<div class="example-card${withPlay ? "" : " no-play"}">
+                  ${withPlay ? `<button class="example-play" aria-label="play" data-text="${escapeHtml(ex.jp || "")}" data-surface="${escapeHtml(surfaceForAudio)}"></button>` : ""}
                   <div>
                     <div class="example-jp">✦ ${ex.jp || ""}</div>
                     <div class="example-en">${ex.en || ""}</div>
@@ -846,12 +935,17 @@
       }
 
       function renderManualDeepDive(item) {
-        const examplesHtml = renderExamples(item.examples, item.surface || "");
         const brief = item.brief || item.hint || "";
         const explanation = item.explanation || item.brief || "説明なし";
-        const wordHeader = buildWordHeader(item);
-        const headerLine = brief ? `<div class="deep-brief">${brief}</div>` : "";
-        deepDiveEl.innerHTML = `<button class="deep-close" aria-label="close">×</button>${wordHeader}${headerLine}<div class="deep-expl">${explanation}</div>${examplesHtml}`;
+        currentDeepDive = {
+          item,
+          explanation,
+          examples: item.examples || [],
+          brief,
+          native: null,
+          showNative: false,
+        };
+        deepDiveEl.innerHTML = renderDeepDive(currentDeepDive);
       }
 
       async function fetchManualDeepDive(item) {
@@ -939,6 +1033,50 @@
         }
       }
 
+      function formatHint(jpHint, nativeHint, nativeLang) {
+        const base = escapeHtml(jpHint || "説明なし");
+        const lang = (nativeLang || "").toLowerCase();
+        if (!showNativeDefs || !nativeHint || !lang || lang === "ja") return base;
+        const label = getNativeShortLabel(lang);
+        const pill = label ? `<span class="hint-native-pill">${escapeHtml(label)}</span>` : "";
+        return `${base}${pill}<span class="hint-native">${escapeHtml(nativeHint)}</span>`;
+      }
+
+      function getNativeLabel() {
+        if (!showNativeDefs) return "";
+        const lang = (nativeLang || "").toLowerCase();
+        if (!lang || lang === "ja") return "";
+        if (lang === "en") return "English";
+        if (lang === "ko") return "한국어";
+        if (lang === "zh") return "中文";
+        return lang.toUpperCase();
+      }
+
+      function getNativeShortLabel(lang) {
+        if (lang === "en") return "ENG";
+        if (lang === "ko") return "한국어";
+        if (lang === "zh") return "中文";
+        return lang.toUpperCase();
+      }
+
+      function renderNativeBlock(native) {
+        if (!native || !native.explanation) return "";
+        const label = getNativeLabel();
+        const examples = (native.examples || []).map((t) => ({ jp: t || "", en: "" }));
+        const examplesHtml = renderExamples(examples, "", false);
+        return `<div class="native-block"><div class="native-label">${escapeHtml(label)}</div><div class="deep-expl">${native.explanation}</div>${examplesHtml}</div>`;
+      }
+
+      function renderDeepDive(dd) {
+        if (!dd) return "";
+        const showNative = !!showNativeDefs && !!dd.showNative && !!dd.native && !!dd.native.explanation;
+        const wordHeader = buildWordHeader(dd.item || {}, showNative);
+        const headerLine = dd.brief ? `<div class="deep-brief">${dd.brief}</div>` : "";
+        const examplesHtml = renderExamples(dd.examples || [], (dd.item && dd.item.surface) || "");
+        const nativeHtml = showNative ? renderNativeBlock(dd.native) : "";
+        return `<button class="deep-close" aria-label="close">×</button>${wordHeader}${headerLine}<div class="deep-expl">${dd.explanation || ""}</div>${examplesHtml}${nativeHtml}`;
+      }
+
       function renderSentenceDisplay() {
         if (showFurigana && currentRuby) {
           currentSentenceEl.innerHTML = currentRuby;
@@ -966,9 +1104,15 @@
         }
       }
 
-      function buildWordHeader(item) {
-        const reading = item.reading || item.base_form || "";
-        return `<div style="font-weight:700; font-size:1.05rem; margin-bottom:0.25rem;">${escapeHtml(item.surface || "")}<span style="margin-left:0.4rem; color:#666; font-size:0.95rem;">${escapeHtml(reading)}</span></div>`;
+      function buildWordHeader(item, isNativeActive = false) {
+        const base = item.base_form || item.surface || "";
+        const reading = item.reading || base || "";
+        const label = getNativeLabel();
+        const nativeBtn =
+          label && nativeLang !== "ja"
+            ? `<button class="mini-btn native-btn${isNativeActive ? " btn-active" : ""}" data-action="native-translate">${escapeHtml(label)}</button>`
+            : "";
+        return `<div class="word-header"><div class="word-main">${escapeHtml(base)}<span style="margin-left:0.4rem; color:#666; font-size:0.95rem;">${escapeHtml(reading)}</span></div>${nativeBtn}</div>`;
       }
 
       function setActive(btn, isActive) {
@@ -1109,6 +1253,7 @@
             currentVoice = s.default_voice || currentVoice;
             currentSpeed = typeof s.tts_speed === "number" ? s.tts_speed : currentSpeed;
             nativeLang = s.native_lang || nativeLang;
+            showNativeDefs = s.show_native_defs !== undefined ? s.show_native_defs : true;
             translateBtn.textContent = nativeLang === "ja" ? "翻訳" : "Translate";
             if (s.font_scale) {
               document.documentElement.style.setProperty("--sentence-scale", s.font_scale);

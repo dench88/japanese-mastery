@@ -93,6 +93,27 @@ def _ensure_translations_column():
 
 _ensure_translations_column()
 
+
+def _ensure_user_settings_columns():
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("PRAGMA table_info(usersettings)")
+        cols = [c[1] for c in cur.fetchall()]
+        if "show_native_defs" not in cols:
+            cur.execute("ALTER TABLE usersettings ADD COLUMN show_native_defs INTEGER")
+            conn.commit()
+    except Exception as e:
+        print("DB user settings column check error:", repr(e))
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+_ensure_user_settings_columns()
+
 # serve static files
 app.mount("/static", StaticFiles(directory=ROOT_DIR / "static"), name="static")
 app.mount("/tts_cache", StaticFiles(directory=TTS_CACHE_DIR), name="tts-cache")
@@ -108,6 +129,7 @@ class TTSRequest(BaseModel):
 
 class AnalyzeRequest(BaseModel):
     text: str
+    native_lang: str | None = None
 
 
 class AnalyzeDeleteRequest(BaseModel):
@@ -117,6 +139,7 @@ class AnalyzeDeleteRequest(BaseModel):
 
 class AnalyzeResponse(BaseModel):
     reading_hiragana: str | None = None
+    reading_ruby: str | None = None
     items: list[dict]
     audio_path: str | None = None
 
@@ -154,6 +177,7 @@ class SettingsResponse(BaseModel):
     default_source: str | None = None
     font_scale: float = 1.0
     native_lang: str | None = "en"
+    show_native_defs: bool = True
 
 
 class TranslateRequest(BaseModel):
@@ -172,9 +196,16 @@ class DeleteSentenceRequest(BaseModel):
 class CleanSourceRequest(BaseModel):
     path: str
 
+
+class TranslateDeepDiveRequest(BaseModel):
+    explanation: str
+    examples: list[dict] | None = None
+    target_lang: str = "en"
+
 class ManualBriefRequest(BaseModel):
     sentence: str
     surface: str
+    native_lang: str | None = None
 
 
 class VocabEntry(BaseModel):
@@ -210,6 +241,56 @@ def sentence_hash(sentence: str) -> str:
 
 def vocab_hash(surface: str) -> str:
     return hashlib.sha256(surface.strip().encode("utf-8")).hexdigest()
+
+
+def translate_glosses(terms: list[str], target_lang: str) -> list[str]:
+    target = (target_lang or "").lower()
+    if not terms or not target or target == "ja":
+        return ["" for _ in terms]
+    prompt = (
+        f"Provide a concise dictionary-style gloss in {target} for each Japanese term. "
+        "Use the dictionary form directly; do NOT translate any explanatory sentence. "
+        "Return short noun/verb/adjective phrases only (no full sentences), no parentheses, no trailing period. "
+        "If a grammar label is implied, render it as a natural short gloss (e.g., 'compared to'). "
+        'Return ONLY JSON with this schema: { "translations": ["..."] }'
+    )
+    try:
+        chat = client.chat.completions.create(
+            model="gpt-4o-mini",
+            temperature=0.2,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": "Return ONLY valid JSON."},
+                {"role": "user", "content": f"{prompt}\nTerms: {json.dumps(terms, ensure_ascii=False)}"},
+            ],
+        )
+        raw = chat.choices[0].message.content or "{}"
+        data = json.loads(raw)
+        translations = data.get("translations", [])
+        if not isinstance(translations, list):
+            return ["" for _ in terms]
+        # pad/trim to expected length
+        if len(translations) < len(terms):
+            translations.extend([""] * (len(terms) - len(translations)))
+        return translations[: len(terms)]
+    except Exception as e:
+        print("translate_glosses error:", repr(e))
+        return ["" for _ in terms]
+
+
+def ensure_native_hints(items: list[dict], native_lang: str | None) -> list[dict]:
+    target = (native_lang or "").lower()
+    if not target or target == "ja":
+        return items
+    missing = [i for i, it in enumerate(items) if it.get("hint_native_lang") != target or not it.get("hint_native")]
+    if not missing:
+        return items
+    terms = [items[i].get("base_form") or items[i].get("surface") or "" for i in missing]
+    translations = translate_glosses(terms, target)
+    for idx, trans in zip(missing, translations):
+        items[idx]["hint_native"] = trans or ""
+        items[idx]["hint_native_lang"] = target
+    return items
 
 
 def load_sentence_cache(sentence: str) -> dict:
@@ -483,6 +564,8 @@ def analyze_sentence_internal(sentence: str):
         "1) Convert the entire sentence into hiragana (no romaji), preserving punctuation; leave katakana loanwords as katakana. "
         "2) Return ruby markup for the sentence: each word with kanji should be wrapped as <ruby><rb>漢字</rb><rt>よみ</rt></ruby>; kana-only spans stay plain. "
         "3) List the 3 most difficult items (word or grammar) for an N1+ learner. Ignore anything below N2 unless nothing harder exists. If nothing suitable, return an empty list. "
+        "For each item's hint_ja, use the most concise dictionary-style meaning only. Do NOT repeat the surface or base form. "
+        "Avoid full sentences or polite forms; no quotes, no trailing period.\n"
         "Respond ONLY with JSON matching exactly this schema (all explanations in Japanese, no English words):\n"
         '{ "reading_hiragana": "<sentence rendered fully in hiragana>", '
         '"reading_ruby": "<sentence with ruby tags>", '
@@ -604,6 +687,9 @@ async def tts(req: TTSRequest):
 @app.post("/api/analyze_sentence", response_model=AnalyzeResponse)
 async def analyze_sentence(req: AnalyzeRequest):
     reading, reading_ruby, items = analyze_sentence_internal(req.text)
+    items = ensure_native_hints(items, req.native_lang)
+    if items:
+        save_sentence_cache(req.text, hard_items=items)
     return {"reading_hiragana": reading, "items": items, "reading_ruby": reading_ruby}
 
 
@@ -624,8 +710,11 @@ async def hard_items(req: AnalyzeRequest):
     cached = load_sentence_cache(req.text)
     items = cached.get("hard_items", [])
     if not items:
-        reading, items = analyze_sentence_internal(req.text)
-        save_sentence_cache(req.text, hiragana=reading, hard_items=items)
+        reading, reading_ruby, items = analyze_sentence_internal(req.text)
+        save_sentence_cache(req.text, hiragana=reading, reading_ruby=reading_ruby, hard_items=items)
+    items = ensure_native_hints(items, req.native_lang)
+    if items:
+        save_sentence_cache(req.text, hard_items=items)
     return {"items": items}
 
 
@@ -651,11 +740,17 @@ async def manual_brief(req: ManualBriefRequest):
     """Return a short Japanese hint for a user-selected surface in the sentence."""
     cached = load_vocab_cache(req.surface)
     if cached.get("brief"):
-        return {"hint_ja": cached.get("brief")}
+        hint_ja = cached.get("brief")
+        hint_native = ""
+        hint_native_lang = (req.native_lang or "").lower()
+        if hint_ja and hint_native_lang and hint_native_lang != "ja":
+            hint_native = translate_glosses([req.surface], hint_native_lang)[0]
+        return {"hint_ja": hint_ja, "hint_native": hint_native, "hint_native_lang": hint_native_lang}
 
     prompt = (
-        "あなたは日本語上級学習者(JLPT N1+)向けのコーチです。与えられた文中の指定語について、短く要点だけ日本語で解説してください。"
-        'JSONのみで返してください。形式: { "hint_ja": "<短い説明 (日本語)>" }'
+        "あなたは日本語上級学習者(JLPT N1+)向けのコーチです。与えられた文中の指定語について、最小限の辞書的意味だけを日本語で返してください。"
+        "語の繰り返しや引用符を避け、文ではなく語義のみを出してください。"
+        'JSONのみで返してください。形式: { "hint_ja": "<語義のみ (日本語)>" }'
     )
     try:
         chat = client.chat.completions.create(
@@ -670,6 +765,10 @@ async def manual_brief(req: ManualBriefRequest):
         raw = chat.choices[0].message.content or "{}"
         data = json.loads(raw)
         hint = data.get("hint_ja") or ""
+        hint_native_lang = (req.native_lang or "").lower()
+        hint_native = ""
+        if hint and hint_native_lang and hint_native_lang != "ja":
+            hint_native = translate_glosses([req.surface], hint_native_lang)[0]
         # cache per-word
         save_vocab_cache(
             surface=req.surface,
@@ -689,13 +788,15 @@ async def manual_brief(req: ManualBriefRequest):
                     "type": "word",
                     "difficulty": 1,
                     "hint_ja": hint,
+                    "hint_native": hint_native,
+                    "hint_native_lang": hint_native_lang,
                 }
             )
         save_sentence_cache(req.sentence, hard_items=hard_items)
-        return {"hint_ja": hint}
+        return {"hint_ja": hint, "hint_native": hint_native, "hint_native_lang": hint_native_lang}
     except Exception as e:
         print("Manual brief error:", repr(e))
-        return {"hint_ja": ""}
+        return {"hint_ja": "", "hint_native": "", "hint_native_lang": (req.native_lang or "").lower()}
 
 
 @app.post("/api/deep_dive", response_model=DeepDiveResponse)
@@ -903,6 +1004,48 @@ async def translate_sentence(req: TranslateRequest):
         raise HTTPException(status_code=500, detail="translation failed")
 
 
+@app.post("/api/translate_deep_dive")
+async def translate_deep_dive(req: TranslateDeepDiveRequest):
+    target = (req.target_lang or "en").lower()
+    explanation = (req.explanation or "").strip()
+    examples = req.examples or []
+    jp_examples = [ex.get("jp", "") for ex in examples if isinstance(ex, dict)]
+    if not explanation and not jp_examples:
+        raise HTTPException(status_code=400, detail="content required")
+    if target == "ja":
+        return {"explanation": explanation, "examples": jp_examples}
+
+    prompt = (
+        f"Translate the following Japanese explanation and example sentences into {target}. "
+        "Return ONLY JSON with this schema:\n"
+        '{ "explanation": "<translated explanation>", "examples": ["<translated example 1>", "<translated example 2>"] }'
+    )
+    try:
+        chat = client.chat.completions.create(
+            model="gpt-4o-mini",
+            temperature=0.2,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": "Return ONLY valid JSON."},
+                {"role": "user", "content": f"{prompt}\nExplanation: {explanation}\nExamples: {json.dumps(jp_examples, ensure_ascii=False)}"},
+            ],
+        )
+        raw = chat.choices[0].message.content or "{}"
+        data = json.loads(raw)
+        translated_expl = data.get("explanation", "")
+        translated_examples = data.get("examples", [])
+        if not isinstance(translated_examples, list):
+            translated_examples = []
+        # pad/trim to match input length
+        if len(translated_examples) < len(jp_examples):
+            translated_examples.extend([""] * (len(jp_examples) - len(translated_examples)))
+        translated_examples = translated_examples[: len(jp_examples)]
+        return {"explanation": translated_expl, "examples": translated_examples}
+    except Exception as e:
+        print("translate_deep_dive error:", repr(e))
+        raise HTTPException(status_code=500, detail="translation failed")
+
+
 @app.post("/api/sentence/delete")
 async def delete_sentence(req: DeleteSentenceRequest):
     text = req.text.strip()
@@ -968,6 +1111,7 @@ def get_user_settings(session: Session, user_id: str) -> SettingsResponse:
         default_source=row.default_source,
         font_scale=row.font_scale if row.font_scale is not None else 1.0,
         native_lang=row.native_lang or "en",
+        show_native_defs=bool(getattr(row, "show_native_defs", True)) if getattr(row, "show_native_defs", None) is not None else True,
     )
 
 
@@ -993,6 +1137,7 @@ async def save_settings(settings: SettingsResponse):
         row.default_source = settings.default_source
         row.font_scale = settings.font_scale
         row.native_lang = settings.native_lang
+        row.show_native_defs = settings.show_native_defs
         session.commit()
         return get_user_settings(session, user_id)
 
