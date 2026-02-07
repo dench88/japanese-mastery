@@ -118,6 +118,7 @@ _ensure_user_settings_columns()
 app.mount("/static", StaticFiles(directory=ROOT_DIR / "static"), name="static")
 app.mount("/tts_cache", StaticFiles(directory=TTS_CACHE_DIR), name="tts-cache")
 app.mount("/recordings", StaticFiles(directory=RECORDINGS_DIR), name="recordings")
+app.mount("/images", StaticFiles(directory=ROOT_DIR / "content" / "images"), name="images")
 
 
 class TTSRequest(BaseModel):
@@ -749,7 +750,8 @@ async def manual_brief(req: ManualBriefRequest):
 
     prompt = (
         "あなたは日本語上級学習者(JLPT N1+)向けのコーチです。与えられた文中の指定語について、最小限の辞書的意味だけを日本語で返してください。"
-        "語の繰り返しや引用符を避け、文ではなく語義のみを出してください。"
+        "表層語や基本形の繰り返しはしないでください。引用符は不要。文ではなく語義のみを出してください。"
+        "丁寧文や説明文は避け、短い語句で。句点などの末尾記号は付けないでください。"
         'JSONのみで返してください。形式: { "hint_ja": "<語義のみ (日本語)>" }'
     )
     try:

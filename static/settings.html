@@ -12,6 +12,16 @@
         background: #fafafa;
         color: #222;
       }
+      .logo-row {
+        display: flex;
+        align-items: center;
+        margin-bottom: 0.75rem;
+      }
+      .logo {
+        width: 128px;
+        height: 128px;
+        background: url("/images/logo_small.png") center/contain no-repeat;
+      }
       h1 {
         margin: 0 0 1rem 0;
         font-size: 1.3rem;
@@ -40,6 +50,9 @@
     </style>
   </head>
   <body>
+    <div class="logo-row">
+      <div class="logo" aria-label="logo"></div>
+    </div>
     <h1 id="title">設定</h1>
     <div class="row">
       <label for="voice" id="label-voice">デフォルト音声</label>

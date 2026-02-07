@@ -12,6 +12,49 @@
         margin: 0;
         padding: 0;
       }
+      .logo {
+        width: 180px;
+        height: 100px;
+        background: url("/images/logo_small.png") center/contain no-repeat;
+        flex: 0 0 auto;
+      }
+      .logo-text {
+        display: flex;
+        flex-direction: column;
+        gap: 0.15rem;
+        font-size: 0.78rem;
+        font-family: "Optima", "Candara", "Palatino Linotype", "Book Antiqua", serif;
+        font-weight: 800;
+        color: #3f3f3f;
+        font-style: italic;
+        line-height: 1.2;
+      }
+      .logo-text span {
+        white-space: nowrap;
+      }
+      .left-header {
+        display: flex;
+        flex-direction: column;
+        gap: 0.45rem;
+        margin-bottom: 0.35rem;
+      }
+      .left-header-top {
+        display: flex;
+        align-items: center;
+        gap: 0.6rem;
+      }
+      .left-header-bottom {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 0.6rem;
+      }
+      .source-title {
+        max-width: 150px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
 
       .page {
         max-width: 1200px;
@@ -113,6 +156,34 @@
         border: 1px solid #ccc;
         background: #f7f7f7;
       }
+      #speak-sentence.play-btn {
+        width: 38px;
+        height: 38px;
+        padding: 0;
+        border: none;
+        background: transparent url("/images/play_button_glowing_green_small.png") center/contain no-repeat;
+        box-shadow: none;
+        position: relative;
+        font-size: 0;
+        text-indent: -9999px;
+      }
+      .controls button:not(#speak-sentence) {
+        height: 38px;
+        width: 52px;
+        min-width: 52px;
+        padding: 0 0.45rem;
+        font-size: 16px;
+        line-height: 1;
+      }
+      .controls select {
+        height: 38px;
+        padding: 0 0.45rem;
+        font-size: 0.82rem;
+        line-height: 1;
+      }
+      #speak-sentence.play-btn::before {
+        content: none;
+      }
 
       .mini-btn {
         padding: 0.25rem 0.5rem;
@@ -125,15 +196,18 @@
       .mini-btn.delete-btn,
       .mini-btn.deep-manual,
       .mini-btn.delete-manual {
-        padding: 0.24rem 0.43rem; /* ~10% narrower again */
+        padding: 0.24rem 0.15rem;
         font-size: 0.85rem;
-        min-width: 47px;
+        min-width: 52px;
+        width: 52px;
+        box-sizing: border-box;
         text-align: center;
         vertical-align: middle;
         display: inline-flex;
         align-items: center;
         justify-content: center;
         line-height: 1.15;
+        white-space: nowrap;
       }
 
       .btn-active {
@@ -277,12 +351,22 @@
       <div class="layout">
         <!-- LEFT: full text -->
         <div class="left-stack">
-          <div style="display:flex; justify-content: space-between; align-items: center; margin-bottom:0.35rem;">
-            <div style="font-weight:600;">本文</div>
-            <div style="display:flex; gap:0.35rem; align-items:center;">
-              <button id="sources-btn" class="mini-btn">資料一覧</button>
-              <button id="prev-sentence" class="mini-btn">前の文</button>
-              <button id="next-sentence" class="mini-btn">次の文</button>
+          <div class="left-header">
+            <div class="left-header-top">
+              <div class="logo" aria-label="logo"></div>
+              <div class="logo-text" aria-label="tagline">
+                <span>Learn Japanese 10x faster</span>
+                <span>日语学习速度提升10倍</span>
+                <span>일본어를 10배 빠르게 배우세요</span>
+              </div>
+            </div>
+            <div class="left-header-bottom">
+              <div id="source-title" class="source-title" style="font-weight:600;">本文</div>
+              <div style="display:flex; gap:0.35rem; align-items:center;">
+                <button id="sources-btn" class="mini-btn">資料一覧</button>
+                <button id="prev-sentence" class="mini-btn">前の文</button>
+                <button id="next-sentence" class="mini-btn">次の文</button>
+              </div>
             </div>
           </div>
           <div class="left-panel" id="full-text">
@@ -297,7 +381,7 @@
         <div class="right-panel">
           <!-- <h2>Current Sentence</h2> -->
           <div class="controls">
-            <button id="speak-sentence">再生</button>
+            <button id="speak-sentence" class="play-btn" aria-label="再生" title="再生">再生</button>
             <select id="voice-select" aria-label="voice" style="padding:0.45rem 0.6rem;">
               <option value="nova">nova</option>
               <option value="sage">sage</option>
@@ -305,10 +389,10 @@
               <option value="onyx">onyx</option>
             </select>
           <button id="vocab-button">単語</button>
-          <button id="reset-sentence">リセット</button>
+          <button id="reset-sentence">削除</button>
           <button id="add-vocab">追加</button>
-          <button id="toggle-fg">FG</button>
-          <button id="toggle-hiragana">HG</button>
+          <button id="toggle-fg" title="ふりがな">振</button>
+          <button id="toggle-hiragana" title="ひらがな">あ</button>
           <button id="translate-btn">Translate</button>
           <button id="vocab-list-btn">語彙</button>
           </div>
@@ -341,6 +425,7 @@
       const player = document.getElementById("player");
       const hardestEl = document.getElementById("hardest-items");
       const deepDiveEl = document.getElementById("deep-dive");
+      const sourceTitleEl = document.getElementById("source-title");
       const toggleHiraBtn = document.getElementById("toggle-hiragana");
       const toggleFgBtn = document.getElementById("toggle-fg");
       const vocabBtn = document.getElementById("vocab-button");
@@ -382,6 +467,7 @@
       let showNativeDefs = true;
       let currentTranslation = "";
       let showTranslation = false;
+      let sourceTitleMap = {};
 
       async function loadSentences() {
         try {
@@ -396,6 +482,42 @@
         } catch (err) {
           console.error(err);
           fullTextEl.textContent = "Error loading sentences.";
+        }
+      }
+
+      function resolveSourceTitle(sourceKey) {
+        if (!sourceKey) return "";
+        if (sourceTitleMap[sourceKey]) return sourceTitleMap[sourceKey];
+        const base = sourceKey.split(/[\\/]/).pop();
+        for (const [path, title] of Object.entries(sourceTitleMap)) {
+          if (path.split(/[\\/]/).pop() === base) {
+            return title;
+          }
+        }
+        return "";
+      }
+
+      function updateSourceTitle() {
+        if (!sourceTitleEl) return;
+        const title = resolveSourceTitle(selectedSource);
+        sourceTitleEl.textContent = title || "本文";
+      }
+
+      async function loadSourceTitles() {
+        try {
+          const res = await fetch("/api/source_list");
+          if (!res.ok) return;
+          const data = await res.json();
+          const list = data.sources || [];
+          sourceTitleMap = {};
+          for (const s of list) {
+            if (s.path) {
+              sourceTitleMap[s.path] = s.name || s.path;
+            }
+          }
+          updateSourceTitle();
+        } catch (err) {
+          console.error("source list load error", err);
         }
       }
 
@@ -423,9 +545,9 @@
         showFurigana = false;
         showHiragana = false;
         showTranslation = false;
-        toggleFgBtn.textContent = "FG";
+        toggleFgBtn.textContent = "振";
         setActive(toggleFgBtn, false);
-        toggleHiraBtn.textContent = "HG";
+        toggleHiraBtn.textContent = "あ";
         setActive(toggleHiraBtn, false);
         setActive(translateBtn, false);
         currentTranslation = "";
@@ -504,7 +626,7 @@
 
       toggleHiraBtn.onclick = () => {
         showHiragana = !showHiragana;
-        toggleHiraBtn.textContent = "HG";
+        toggleHiraBtn.textContent = "あ";
         setActive(toggleHiraBtn, showHiragana);
 
         if (showHiragana) {
@@ -522,7 +644,7 @@
 
       toggleFgBtn.onclick = async () => {
         showFurigana = !showFurigana;
-        toggleFgBtn.textContent = "FG";
+        toggleFgBtn.textContent = "振";
         setActive(toggleFgBtn, showFurigana);
         if (showFurigana && !currentReading) {
           await fetchReading(currentSentence, true); // suppress HG display
@@ -1037,9 +1159,7 @@
         const base = escapeHtml(jpHint || "説明なし");
         const lang = (nativeLang || "").toLowerCase();
         if (!showNativeDefs || !nativeHint || !lang || lang === "ja") return base;
-        const label = getNativeShortLabel(lang);
-        const pill = label ? `<span class="hint-native-pill">${escapeHtml(label)}</span>` : "";
-        return `${base}${pill}<span class="hint-native">${escapeHtml(nativeHint)}</span>`;
+        return `${base}<span class="hint-native">${escapeHtml(nativeHint)}</span>`;
       }
 
       function getNativeLabel() {
@@ -1222,8 +1342,16 @@
         const target = fullTextEl.querySelector(".current-highlight");
         if (!target) return;
         const container = fullTextEl;
-        const top = target.offsetTop - container.clientHeight / 2 + target.clientHeight / 2;
-        container.scrollTop = Math.max(0, top);
+        const alignCenter = () => {
+          const containerRect = container.getBoundingClientRect();
+          const targetRect = target.getBoundingClientRect();
+          const offset = (targetRect.top - containerRect.top) - (containerRect.height / 2 - targetRect.height / 2);
+          container.scrollTop = Math.max(0, container.scrollTop + offset);
+        };
+        requestAnimationFrame(() => {
+          alignCenter();
+          requestAnimationFrame(alignCenter);
+        });
       }
 
       function renderSentenceList(highlightSentence = "") {
@@ -1254,7 +1382,7 @@
             currentSpeed = typeof s.tts_speed === "number" ? s.tts_speed : currentSpeed;
             nativeLang = s.native_lang || nativeLang;
             showNativeDefs = s.show_native_defs !== undefined ? s.show_native_defs : true;
-            translateBtn.textContent = nativeLang === "ja" ? "翻訳" : "Translate";
+            translateBtn.textContent = getNativeShortLabel(nativeLang) || "Translate";
             if (s.font_scale) {
               document.documentElement.style.setProperty("--sentence-scale", s.font_scale);
             }
@@ -1269,6 +1397,7 @@
               showHiragana = true;
               setActive(toggleHiraBtn, true);
             }
+            updateSourceTitle();
           }
         } catch (err) {
           console.error("settings load error", err);
@@ -1278,6 +1407,7 @@
       // Initial load
       (async () => {
         await applySettings();
+        await loadSourceTitles();
         await loadSentences();
         await loadSentence(startIndex);
       })();
