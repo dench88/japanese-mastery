@@ -44,6 +44,36 @@
         background: #fff;
         cursor: pointer;
       }
+      #transcribe-btn.is-loading {
+        position: relative;
+        color: #0b6b36;
+        border-color: #7ad9a5;
+        background: #e9f8f0;
+        animation: transcribe-pulse 1.1s ease-in-out infinite;
+      }
+      #transcribe-btn.is-loading::after {
+        content: "";
+        position: absolute;
+        right: 10px;
+        top: 50%;
+        width: 8px;
+        height: 8px;
+        margin-top: -4px;
+        border-radius: 50%;
+        background: #1aa957;
+        box-shadow: 0 0 6px rgba(26, 169, 87, 0.6);
+      }
+      @keyframes transcribe-pulse {
+        0% {
+          transform: scale(1);
+        }
+        50% {
+          transform: scale(1.03);
+        }
+        100% {
+          transform: scale(1);
+        }
+      }
       audio {
         width: 100%;
       }
@@ -66,6 +96,7 @@
       .seg.active {
         background: #e9fbe9;
         border-left: 4px solid #1fbf57;
+        font-weight: 700;
       }
     </style>
   </head>
@@ -89,6 +120,7 @@
       const titleEl = document.getElementById("audio-title");
       const audioEl = document.getElementById("audio");
       const transcriptEl = document.getElementById("transcript");
+      const transcribeBtn = document.getElementById("transcribe-btn");
       let segments = [];
       let activeIdx = -1;
 
@@ -107,7 +139,11 @@
       };
       async function transcribeAudio() {
         if (!file) return;
-        transcriptEl.textContent = "文字起こし中…";
+        transcribeBtn.classList.add("is-loading");
+        transcribeBtn.disabled = true;
+        if (!segments.length) {
+          transcriptEl.textContent = "文字起こし中…";
+        }
         try {
           const res = await fetch("/api/audio_transcribe", {
             method: "POST",
@@ -121,21 +157,18 @@
           const data = await res.json();
           segments = Array.isArray(data.segments) ? data.segments : [];
           if (!segments.length) {
-            transcriptEl.textContent = "文字起こしが空でした。";
+            const text = (data.text || "").trim();
+            transcriptEl.textContent = text || "文字起こしが空でした。";
             return;
           }
-          transcriptEl.innerHTML = segments
-            .map(
-              (s, i) =>
-                `<span class="seg" data-idx="${i}" data-start="${s.start}" data-end="${s.end}">${escapeHtml(
-                  s.text || ""
-                )}</span>`
-            )
-            .join("");
+          renderSegments(segments);
           activeIdx = -1;
         } catch (err) {
           console.error(err);
           transcriptEl.textContent = "文字起こしに失敗しました。";
+        } finally {
+          transcribeBtn.classList.remove("is-loading");
+          transcribeBtn.disabled = false;
         }
       }
       document.getElementById("transcribe-btn").onclick = transcribeAudio;
@@ -143,11 +176,29 @@
         window.location.href = "/static/sources.html";
       };
 
-      function escapeHtml(str) {
-        return str
-          .replace(/&/g, "&amp;")
-          .replace(/</g, "&lt;")
-          .replace(/>/g, "&gt;");
+      function renderSegments(items) {
+        transcriptEl.textContent = "";
+        const batchSize = 200;
+        let i = 0;
+        function appendBatch() {
+          const frag = document.createDocumentFragment();
+          const end = Math.min(i + batchSize, items.length);
+          for (; i < end; i += 1) {
+            const seg = items[i] || {};
+            const span = document.createElement("span");
+            span.className = "seg";
+            span.dataset.idx = i;
+            span.dataset.start = String(seg.start ?? 0);
+            span.dataset.end = String(seg.end ?? 0);
+            span.textContent = seg.text || "";
+            frag.appendChild(span);
+          }
+          transcriptEl.appendChild(frag);
+          if (i < items.length) {
+            requestAnimationFrame(appendBatch);
+          }
+        }
+        appendBatch();
       }
 
       function highlightSegment() {
@@ -177,9 +228,7 @@
 
       audioEl.addEventListener("timeupdate", highlightSegment);
 
-      if (file) {
-        transcribeAudio();
-      }
+      // Only transcribe on user request (button click).
     </script>
   </body>
 </html>

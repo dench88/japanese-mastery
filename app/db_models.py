@@ -58,6 +58,7 @@ class AudioTranscript(SQLModel, table=True):
     audio_mtime: Optional[float] = None
     transcript_text: Optional[str] = None
     segments_json: Optional[str] = None  # JSON string list of segments
+    progress_seconds: Optional[float] = None
 
 
 def init_db():
@@ -105,6 +106,7 @@ def audio_to_dict(row: AudioTranscript | None) -> Optional[dict[str, Any]]:
         "audio_mtime": row.audio_mtime,
         "text": row.transcript_text or "",
         "segments": json.loads(row.segments_json or "[]"),
+        "progress_seconds": row.progress_seconds,
     }
 
 
@@ -176,6 +178,7 @@ def upsert_audio_transcript(
     audio_mtime: Optional[float],
     text: Optional[str],
     segments: Iterable[Any],
+    progress_seconds: Optional[float] = None,
 ):
     segments_json = json.dumps(list(segments or []), ensure_ascii=False)
     existing = session.get(AudioTranscript, audio_name)
@@ -184,6 +187,7 @@ def upsert_audio_transcript(
         existing.audio_mtime = audio_mtime
         existing.transcript_text = text
         existing.segments_json = segments_json
+        existing.progress_seconds = progress_seconds
     else:
         session.add(
             AudioTranscript(
@@ -192,5 +196,6 @@ def upsert_audio_transcript(
                 audio_mtime=audio_mtime,
                 transcript_text=text,
                 segments_json=segments_json,
+                progress_seconds=progress_seconds,
             )
         )

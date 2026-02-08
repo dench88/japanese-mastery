@@ -41,6 +41,8 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 ENV_PATH = ROOT_DIR / ".env"
 load_dotenv(ENV_PATH)  # load env from repo root
 SPEED_DEFAULT = float(os.getenv("TTS_SPEED_DEFAULT", "1.1"))
+# whisper-1 supports verbose_json + timestamp granularity for highlighting
+AUDIO_TRANSCRIBE_MODEL = os.getenv("AUDIO_TRANSCRIBE_MODEL", "whisper-1")
 
 # --- load and split book text ---
 BOOKS_DIR = ROOT_DIR / "content" / "source_materials"
@@ -78,7 +80,7 @@ else:
     _podcasts_dir = AUDIO_DIR
 RAW_ALLOWED_EXTS = {".pdf", ".txt", ".md", ".docx", ".zip"}
 AUDIO_ALLOWED_EXTS = {".mp3", ".m4a", ".wav", ".webm", ".ogg"}
-AUDIO_CHUNK_SECONDS = 300
+AUDIO_CHUNK_SECONDS = 120
 
 # --- user handling (single-user stub) ---
 def get_current_user_id() -> str:
@@ -135,6 +137,27 @@ def _ensure_user_settings_columns():
 
 
 _ensure_user_settings_columns()
+
+
+def _ensure_audio_transcript_columns():
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("PRAGMA table_info(audiotranscript)")
+        cols = [c[1] for c in cur.fetchall()]
+        if "progress_seconds" not in cols:
+            cur.execute("ALTER TABLE audiotranscript ADD COLUMN progress_seconds REAL")
+            conn.commit()
+    except Exception as e:
+        print("DB audio transcript column check error:", repr(e))
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+_ensure_audio_transcript_columns()
 
 # serve static files
 app.mount("/static", StaticFiles(directory=ROOT_DIR / "static"), name="static")
@@ -1203,7 +1226,7 @@ async def raw_file(name: str):
 
 
 @app.post("/api/audio_transcribe")
-async def audio_transcribe(req: AudioTranscribeRequest):
+def audio_transcribe(req: AudioTranscribeRequest):
     target = AUDIO_DIR / req.name
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=404, detail="file not found")
@@ -1214,65 +1237,104 @@ async def audio_transcribe(req: AudioTranscribeRequest):
 
     mtime = target.stat().st_mtime
     cached = load_audio_transcript_cached(req.name, mtime)
-    if cached:
-        return {"text": cached.get("text", ""), "segments": cached.get("segments", [])}
+    cached_text = (cached.get("text") or "").strip() if cached else ""
+    cached_segments = (cached.get("segments", []) or []) if cached else []
+    cached_progress = cached.get("progress_seconds") if cached else None
+
+    def _seg_val(seg, key: str, default=None):
+        if isinstance(seg, dict):
+            return seg.get(key, default)
+        return getattr(seg, key, default)
+
+    def _transcribe_audio(file_name: str, file_bytes: bytes):
+        kwargs = {
+            "model": AUDIO_TRANSCRIBE_MODEL,
+            "file": (file_name, file_bytes),
+            "language": "ja",
+        }
+        if AUDIO_TRANSCRIBE_MODEL == "whisper-1":
+            kwargs["response_format"] = "verbose_json"
+            kwargs["timestamp_granularities"] = ["segment"]
+        else:
+            kwargs["response_format"] = "json"
+        return client.audio.transcriptions.create(**kwargs)
+
+    def _max_segment_end(segments: list[dict]) -> float:
+        max_end = 0.0
+        for seg in segments:
+            try:
+                end = float(seg.get("end", 0) or 0)
+                if end > max_end:
+                    max_end = end
+            except Exception:
+                continue
+        return max_end
+
+    duration = probe_duration_seconds(target)
+    start_offset = max(_max_segment_end(cached_segments), float(cached_progress or 0.0))
+    if duration is not None and start_offset >= max(duration - 0.05, 0.0):
+        return {"text": cached_text, "segments": cached_segments}
+
+    chunk_duration = float(AUDIO_CHUNK_SECONDS)
+    if duration is not None:
+        remaining = max(duration - start_offset, 0.0)
+        if remaining <= 0.05:
+            return {"text": cached_text, "segments": cached_segments}
+        chunk_duration = min(chunk_duration, remaining)
 
     try:
-        chunks = split_audio_chunks(target, AUDIO_CHUNK_SECONDS)
+        chunk = extract_audio_chunk(target, start_offset, chunk_duration)
     except HTTPException:
         raise
     except Exception as e:
-        print("audio split error:", repr(e))
-        raise HTTPException(status_code=500, detail="audio split failed")
+        print("audio chunk error:", repr(e))
+        raise HTTPException(status_code=500, detail="audio chunk failed")
 
-    all_segments: list[dict] = []
-    text_parts: list[str] = []
-    offset = 0.0
-    for idx, ch in enumerate(chunks):
+    try:
+        transcription = _transcribe_audio(chunk["name"], chunk["bytes"])
+    except Exception as e:
+        print("audio transcribe chunk error:", repr(e))
+        raise HTTPException(status_code=500, detail="transcription failed")
+
+    if isinstance(transcription, dict):
+        chunk_text = transcription.get("text") or ""
+        segments = transcription.get("segments") or []
+    else:
+        chunk_text = getattr(transcription, "text", "") or ""
+        segments = getattr(transcription, "segments", []) or []
+
+    new_segments: list[dict] = []
+    for seg in segments:
         try:
-            transcription = client.audio.transcriptions.create(
-                model="whisper-1",
-                file=(ch["name"], ch["bytes"]),
-                response_format="verbose_json",
-                timestamp_granularities=["segment"],
-            )
-        except Exception as e:
-            print("audio transcribe chunk error:", repr(e))
-            raise HTTPException(status_code=500, detail="transcription failed")
+            start = float(_seg_val(seg, "start", 0) or 0) + start_offset
+            end = float(_seg_val(seg, "end", 0) or 0) + start_offset
+            seg_text = (_seg_val(seg, "text", "") or "").strip()
+            if seg_text:
+                new_segments.append({"start": start, "end": end, "text": seg_text})
+        except Exception:
+            continue
 
-        if isinstance(transcription, dict):
-            chunk_text = transcription.get("text") or ""
-            segments = transcription.get("segments") or []
-        else:
-            chunk_text = getattr(transcription, "text", "") or ""
-            segments = getattr(transcription, "segments", []) or []
-
-        if chunk_text:
-            text_parts.append(chunk_text.strip())
-
-        for seg in segments:
-            try:
-                start = float(seg.get("start", 0)) + offset
-                end = float(seg.get("end", 0)) + offset
-                seg_text = (seg.get("text") or "").strip()
-                if seg_text:
-                    all_segments.append({"start": start, "end": end, "text": seg_text})
-            except Exception:
-                continue
-
-        offset += float(ch.get("duration", AUDIO_CHUNK_SECONDS))
-
+    all_segments = cached_segments + new_segments
+    text_parts: list[str] = []
+    if cached_text:
+        text_parts.append(cached_text)
+    if chunk_text:
+        text_parts.append(chunk_text.strip())
     text = "\n".join([t for t in text_parts if t]).strip()
-    with get_session() as session:
-        upsert_audio_transcript(
-            session,
-            audio_name=req.name,
-            audio_path=target.relative_to(ROOT_DIR).as_posix(),
-            audio_mtime=mtime,
-            text=text,
-            segments=all_segments,
-        )
-        session.commit()
+    new_progress = start_offset + chunk_duration
+
+    if text or all_segments or new_progress > 0:
+        with get_session() as session:
+            upsert_audio_transcript(
+                session,
+                audio_name=req.name,
+                audio_path=target.relative_to(ROOT_DIR).as_posix(),
+                audio_mtime=mtime,
+                text=text,
+                segments=all_segments,
+                progress_seconds=new_progress,
+            )
+            session.commit()
 
     return {"text": text, "segments": all_segments}
 
@@ -1345,6 +1407,38 @@ def probe_duration_seconds(path: Path) -> float | None:
         return float(result.stdout.strip())
     except Exception:
         return None
+
+
+def extract_audio_chunk(path: Path, start_seconds: float, duration_seconds: float) -> dict:
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise HTTPException(status_code=500, detail="ffmpeg is required for chunked transcription")
+    if duration_seconds <= 0:
+        raise HTTPException(status_code=400, detail="invalid chunk duration")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir) / f"chunk_{int(start_seconds * 1000)}.wav"
+        cmd = [
+            ffmpeg,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-ss",
+            str(max(start_seconds, 0.0)),
+            "-t",
+            str(duration_seconds),
+            "-i",
+            str(path),
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-f",
+            "wav",
+            str(tmp_path),
+        ]
+        subprocess.run(cmd, check=True)
+        audio_bytes = tmp_path.read_bytes()
+    return {"name": tmp_path.name, "bytes": audio_bytes, "duration": float(duration_seconds)}
 
 
 def split_audio_chunks(path: Path, chunk_seconds: int) -> list[dict]:
