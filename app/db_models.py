@@ -49,6 +49,15 @@ class UserSettings(SQLModel, table=True):
     font_scale: Optional[float] = None
     native_lang: Optional[str] = None
     show_native_defs: Optional[bool] = None
+    user_name: Optional[str] = None
+
+
+class AudioTranscript(SQLModel, table=True):
+    audio_name: str = Field(primary_key=True)
+    audio_path: Optional[str] = None
+    audio_mtime: Optional[float] = None
+    transcript_text: Optional[str] = None
+    segments_json: Optional[str] = None  # JSON string list of segments
 
 
 def init_db():
@@ -84,6 +93,18 @@ def vocab_to_dict(row: VocabEntryCache | None) -> Optional[dict[str, Any]]:
         "brief": row.brief,
         "detail": row.detail,
         "examples": json.loads(row.examples_json or "[]"),
+    }
+
+
+def audio_to_dict(row: AudioTranscript | None) -> Optional[dict[str, Any]]:
+    if not row:
+        return None
+    return {
+        "audio_name": row.audio_name,
+        "audio_path": row.audio_path,
+        "audio_mtime": row.audio_mtime,
+        "text": row.transcript_text or "",
+        "segments": json.loads(row.segments_json or "[]"),
     }
 
 
@@ -144,5 +165,32 @@ def upsert_vocab(
                 brief=brief,
                 detail=detail,
                 examples_json=examples_json,
+            )
+        )
+
+
+def upsert_audio_transcript(
+    session: Session,
+    audio_name: str,
+    audio_path: Optional[str],
+    audio_mtime: Optional[float],
+    text: Optional[str],
+    segments: Iterable[Any],
+):
+    segments_json = json.dumps(list(segments or []), ensure_ascii=False)
+    existing = session.get(AudioTranscript, audio_name)
+    if existing:
+        existing.audio_path = audio_path
+        existing.audio_mtime = audio_mtime
+        existing.transcript_text = text
+        existing.segments_json = segments_json
+    else:
+        session.add(
+            AudioTranscript(
+                audio_name=audio_name,
+                audio_path=audio_path,
+                audio_mtime=audio_mtime,
+                transcript_text=text,
+                segments_json=segments_json,
             )
         )

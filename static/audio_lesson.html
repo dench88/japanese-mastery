@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Audio Lesson</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      body {
+        font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+        margin: 0;
+        padding: 1rem;
+        background: #fafafa;
+        color: #222;
+      }
+      .logo-row {
+        display: flex;
+        align-items: center;
+        margin-bottom: 0.75rem;
+      }
+      .logo {
+        width: 259.2px;
+        height: 144px;
+        background: url("/images/logo_small.png") center/contain no-repeat;
+      }
+      h1 {
+        margin: 0 0 0.75rem 0;
+        font-size: 1.35rem;
+      }
+      .title {
+        font-weight: 600;
+        margin-bottom: 0.75rem;
+      }
+      .controls {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        margin-bottom: 0.75rem;
+        flex-wrap: wrap;
+      }
+      button {
+        padding: 0.45rem 0.8rem;
+        font-size: 0.95rem;
+        border: 1px solid #ccc;
+        background: #fff;
+        cursor: pointer;
+      }
+      audio {
+        width: 100%;
+      }
+      .transcript {
+        margin-top: 1rem;
+        background: #fff;
+        border: 1px solid #e5e5e5;
+        border-radius: 8px;
+        padding: 0.75rem;
+        max-height: 45vh;
+        overflow-y: auto;
+        line-height: 1.7;
+      }
+      .seg {
+        display: block;
+        padding: 0.2rem 0.35rem;
+        border-radius: 6px;
+        margin-bottom: 0.15rem;
+      }
+      .seg.active {
+        background: #e9fbe9;
+        border-left: 4px solid #1fbf57;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="logo-row">
+      <div class="logo" aria-label="logo"></div>
+    </div>
+    <h1>音声レッスン</h1>
+    <div class="title" id="audio-title">読み込み中…</div>
+    <div class="controls">
+      <button id="play-btn">再生</button>
+      <button id="pause-btn">一時停止</button>
+      <button id="transcribe-btn">文字起こし</button>
+      <button id="back-btn">資料一覧へ戻る</button>
+    </div>
+    <audio id="audio" controls></audio>
+    <div class="transcript" id="transcript">文字起こしは未取得です。</div>
+    <script>
+      const params = new URLSearchParams(window.location.search);
+      const file = params.get("file") || "";
+      const titleEl = document.getElementById("audio-title");
+      const audioEl = document.getElementById("audio");
+      const transcriptEl = document.getElementById("transcript");
+      let segments = [];
+      let activeIdx = -1;
+
+      if (!file) {
+        titleEl.textContent = "ファイルが指定されていません。";
+      } else {
+        titleEl.textContent = file;
+        audioEl.src = `/api/audio_file?name=${encodeURIComponent(file)}`;
+      }
+
+      document.getElementById("play-btn").onclick = () => {
+        audioEl.play().catch(() => {});
+      };
+      document.getElementById("pause-btn").onclick = () => {
+        audioEl.pause();
+      };
+      async function transcribeAudio() {
+        if (!file) return;
+        transcriptEl.textContent = "文字起こし中…";
+        try {
+          const res = await fetch("/api/audio_transcribe", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name: file }),
+          });
+          if (!res.ok) {
+            transcriptEl.textContent = "文字起こしに失敗しました。";
+            return;
+          }
+          const data = await res.json();
+          segments = Array.isArray(data.segments) ? data.segments : [];
+          if (!segments.length) {
+            transcriptEl.textContent = "文字起こしが空でした。";
+            return;
+          }
+          transcriptEl.innerHTML = segments
+            .map(
+              (s, i) =>
+                `<span class="seg" data-idx="${i}" data-start="${s.start}" data-end="${s.end}">${escapeHtml(
+                  s.text || ""
+                )}</span>`
+            )
+            .join("");
+          activeIdx = -1;
+        } catch (err) {
+          console.error(err);
+          transcriptEl.textContent = "文字起こしに失敗しました。";
+        }
+      }
+      document.getElementById("transcribe-btn").onclick = transcribeAudio;
+      document.getElementById("back-btn").onclick = () => {
+        window.location.href = "/static/sources.html";
+      };
+
+      function escapeHtml(str) {
+        return str
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;");
+      }
+
+      function highlightSegment() {
+        if (!segments.length) return;
+        const t = audioEl.currentTime;
+        let idx = -1;
+        for (let i = 0; i < segments.length; i += 1) {
+          if (t >= segments[i].start && t < segments[i].end) {
+            idx = i;
+            break;
+          }
+        }
+        if (idx === -1 || idx === activeIdx) return;
+        const prev = transcriptEl.querySelector(`.seg[data-idx="${activeIdx}"]`);
+        if (prev) prev.classList.remove("active");
+        const curr = transcriptEl.querySelector(`.seg[data-idx="${idx}"]`);
+        if (curr) {
+          curr.classList.add("active");
+          const rect = curr.getBoundingClientRect();
+          const contRect = transcriptEl.getBoundingClientRect();
+          if (rect.top < contRect.top || rect.bottom > contRect.bottom) {
+            curr.scrollIntoView({ block: "center" });
+          }
+        }
+        activeIdx = idx;
+      }
+
+      audioEl.addEventListener("timeupdate", highlightSegment);
+
+      if (file) {
+        transcribeAudio();
+      }
+    </script>
+  </body>
+</html>

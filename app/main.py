@@ -5,6 +5,10 @@ import json
 import hashlib
 import shutil
 import sqlite3
+import urllib.request
+import urllib.error
+import subprocess
+import tempfile
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.responses import FileResponse, RedirectResponse
@@ -20,10 +24,13 @@ from app.db_models import (
     get_session,
     sentence_to_dict,
     vocab_to_dict,
+    audio_to_dict,
     upsert_sentence,
     upsert_vocab,
+    upsert_audio_transcript,
     SentenceCache,
     VocabEntryCache,
+    AudioTranscript,
     SourceMaterial,
     UserSettings,
     DB_PATH,
@@ -59,7 +66,19 @@ RECORDINGS_DIR = ROOT_DIR / "recordings"
 RECORDINGS_DIR.mkdir(exist_ok=True)
 RAW_DIR = ROOT_DIR / "content" / "raw"
 RAW_DIR.mkdir(parents=True, exist_ok=True)
+_podcast_dir = RAW_DIR / "podcast"
+_podcasts_dir = RAW_DIR / "podcasts"
+if _podcast_dir.exists():
+    AUDIO_DIR = _podcast_dir
+elif _podcasts_dir.exists():
+    AUDIO_DIR = _podcasts_dir
+else:
+    AUDIO_DIR = _podcast_dir
+    AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+    _podcasts_dir = AUDIO_DIR
 RAW_ALLOWED_EXTS = {".pdf", ".txt", ".md", ".docx", ".zip"}
+AUDIO_ALLOWED_EXTS = {".mp3", ".m4a", ".wav", ".webm", ".ogg"}
+AUDIO_CHUNK_SECONDS = 300
 
 # --- user handling (single-user stub) ---
 def get_current_user_id() -> str:
@@ -102,6 +121,9 @@ def _ensure_user_settings_columns():
         cols = [c[1] for c in cur.fetchall()]
         if "show_native_defs" not in cols:
             cur.execute("ALTER TABLE usersettings ADD COLUMN show_native_defs INTEGER")
+            conn.commit()
+        if "user_name" not in cols:
+            cur.execute("ALTER TABLE usersettings ADD COLUMN user_name TEXT")
             conn.commit()
     except Exception as e:
         print("DB user settings column check error:", repr(e))
@@ -179,6 +201,7 @@ class SettingsResponse(BaseModel):
     font_scale: float = 1.0
     native_lang: str | None = "en"
     show_native_defs: bool = True
+    user_name: str | None = None
 
 
 class TranslateRequest(BaseModel):
@@ -207,6 +230,16 @@ class ManualBriefRequest(BaseModel):
     sentence: str
     surface: str
     native_lang: str | None = None
+
+
+class RealtimeTokenRequest(BaseModel):
+    voice: str | None = None
+    model: str | None = None
+    user_name: str | None = None
+
+
+class AudioTranscribeRequest(BaseModel):
+    name: str
 
 
 class VocabEntry(BaseModel):
@@ -801,6 +834,74 @@ async def manual_brief(req: ManualBriefRequest):
         return {"hint_ja": "", "hint_native": "", "hint_native_lang": (req.native_lang or "").lower()}
 
 
+@app.post("/api/realtime_token")
+async def realtime_token(req: RealtimeTokenRequest):
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="OPENAI_API_KEY missing")
+    user_name = (req.user_name or "Rusty").strip() or "Rusty"
+    voice = (req.voice or "marin").lower()
+    if voice not in {"alloy", "ash", "ballad", "coral", "echo", "fable", "marin", "sage", "shimmer", "verse"}:
+        voice = "marin"
+    instructions = (
+        "あなたは上級日本語学習者のための専門コーチです。ユーザーはあなたと日本語で会話練習したいと思っています。"
+        f"接続でき次第すぐに「こんにちは、{user_name}さん。今日は何を勉強していますか？」と始めてください。"
+        "ユーザーが話す量があなたより多くなるようにしてください。返答は短く、要点だけで簡潔にし、"
+        "話題への理解を深めるための関連質問を中心にしてください。"
+        "会話が詰まったら「最近、日本語でどんな話題を勉強していますか？」などの開かれた質問をしてください。"
+        "それでも詰まったら「今日はどんな単語を勉強しましたか？」と聞き、その単語を軸に会話を進めてください。"
+        "語彙や文法の意味に関する質問には答えてください。"
+        "基本は自然な日本語で話してください。"
+        "ただしユーザーが理解に苦しんでいる場合は、短い文や易しい語彙、必要に応じて少しゆっくり話してください。"
+        "ユーザーは上級学習者なので、適度に難しい日本語で挑戦させてください。"
+    )
+    session = {
+        "type": "realtime",
+        "model": req.model or "gpt-realtime",
+        "audio": {"output": {"voice": voice}},
+        "instructions": instructions,
+    }
+    payload = json.dumps({"session": session}).encode("utf-8")
+    request = urllib.request.Request(
+        "https://api.openai.com/v1/realtime/client_secrets",
+        data=payload,
+        method="POST",
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode("utf-8", errors="ignore")
+        print("Realtime token HTTP error:", e.code, raw)
+        detail = "Failed to create realtime token"
+        try:
+            payload = json.loads(raw)
+            detail = payload.get("error", {}).get("message") or payload.get("detail") or detail
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=detail)
+    except Exception as e:
+        print("Realtime token error:", repr(e))
+        raise HTTPException(status_code=500, detail="Failed to create realtime token")
+
+    client_secret = None
+    if isinstance(data, dict):
+        if isinstance(data.get("client_secret"), dict):
+            client_secret = data["client_secret"].get("value")
+        elif isinstance(data.get("client_secret"), str):
+            client_secret = data.get("client_secret")
+        if not client_secret:
+            client_secret = data.get("value")
+    if not client_secret:
+        raise HTTPException(status_code=500, detail="Missing client_secret in response")
+    return {
+        "client_secret": client_secret,
+        "value": client_secret,
+        "expires_at": (data.get("client_secret") or {}).get("expires_at") if isinstance(data, dict) else None,
+    }
+
+
 @app.post("/api/deep_dive", response_model=DeepDiveResponse)
 async def deep_dive(req: DeepDiveRequest):
     item = req.item or {}
@@ -1101,10 +1202,197 @@ async def raw_file(name: str):
     return FileResponse(target)
 
 
+@app.post("/api/audio_transcribe")
+async def audio_transcribe(req: AudioTranscribeRequest):
+    target = AUDIO_DIR / req.name
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="file not found")
+    if target.suffix.lower() not in AUDIO_ALLOWED_EXTS:
+        raise HTTPException(status_code=403, detail="extension not allowed")
+    if target.stat().st_size == 0:
+        raise HTTPException(status_code=400, detail="empty audio")
+
+    mtime = target.stat().st_mtime
+    cached = load_audio_transcript_cached(req.name, mtime)
+    if cached:
+        return {"text": cached.get("text", ""), "segments": cached.get("segments", [])}
+
+    try:
+        chunks = split_audio_chunks(target, AUDIO_CHUNK_SECONDS)
+    except HTTPException:
+        raise
+    except Exception as e:
+        print("audio split error:", repr(e))
+        raise HTTPException(status_code=500, detail="audio split failed")
+
+    all_segments: list[dict] = []
+    text_parts: list[str] = []
+    offset = 0.0
+    for idx, ch in enumerate(chunks):
+        try:
+            transcription = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=(ch["name"], ch["bytes"]),
+                response_format="verbose_json",
+                timestamp_granularities=["segment"],
+            )
+        except Exception as e:
+            print("audio transcribe chunk error:", repr(e))
+            raise HTTPException(status_code=500, detail="transcription failed")
+
+        if isinstance(transcription, dict):
+            chunk_text = transcription.get("text") or ""
+            segments = transcription.get("segments") or []
+        else:
+            chunk_text = getattr(transcription, "text", "") or ""
+            segments = getattr(transcription, "segments", []) or []
+
+        if chunk_text:
+            text_parts.append(chunk_text.strip())
+
+        for seg in segments:
+            try:
+                start = float(seg.get("start", 0)) + offset
+                end = float(seg.get("end", 0)) + offset
+                seg_text = (seg.get("text") or "").strip()
+                if seg_text:
+                    all_segments.append({"start": start, "end": end, "text": seg_text})
+            except Exception:
+                continue
+
+        offset += float(ch.get("duration", AUDIO_CHUNK_SECONDS))
+
+    text = "\n".join([t for t in text_parts if t]).strip()
+    with get_session() as session:
+        upsert_audio_transcript(
+            session,
+            audio_name=req.name,
+            audio_path=target.relative_to(ROOT_DIR).as_posix(),
+            audio_mtime=mtime,
+            text=text,
+            segments=all_segments,
+        )
+        session.commit()
+
+    return {"text": text, "segments": all_segments}
+
+
+@app.get("/api/audio_list")
+async def audio_list():
+    files = []
+    for p in AUDIO_DIR.iterdir():
+        if p.is_file() and p.suffix.lower() in AUDIO_ALLOWED_EXTS:
+            files.append(
+                {
+                    "name": p.name,
+                    "path": p.relative_to(ROOT_DIR).as_posix(),
+                    "size": p.stat().st_size,
+                    "mtime": p.stat().st_mtime,
+                }
+            )
+    files.sort(key=lambda x: x["mtime"], reverse=True)
+    return {"files": files}
+
+
+@app.get("/api/audio_file")
+async def audio_file(name: str):
+    # security: do not allow path traversal
+    target = AUDIO_DIR / name
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="file not found")
+    if target.suffix.lower() not in AUDIO_ALLOWED_EXTS:
+        raise HTTPException(status_code=403, detail="extension not allowed")
+    return FileResponse(target)
+
+
+def load_audio_transcript_cached(name: str, mtime: float) -> dict | None:
+    try:
+        with get_session() as session:
+            row = session.get(AudioTranscript, name)
+            if not row:
+                return None
+            cached = audio_to_dict(row) or {}
+            cached_mtime = cached.get("audio_mtime")
+            if cached_mtime is None:
+                return None
+            if abs(float(cached_mtime) - float(mtime)) > 0.0001:
+                return None
+            return cached
+    except Exception:
+        return None
+
+
+def probe_duration_seconds(path: Path) -> float | None:
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe:
+        return None
+    try:
+        result = subprocess.run(
+            [
+                ffprobe,
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return float(result.stdout.strip())
+    except Exception:
+        return None
+
+
+def split_audio_chunks(path: Path, chunk_seconds: int) -> list[dict]:
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise HTTPException(status_code=500, detail="ffmpeg is required for chunked transcription")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        pattern = tmp_path / f"chunk_%03d{path.suffix.lower()}"
+        cmd = [
+            ffmpeg,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(path),
+            "-f",
+            "segment",
+            "-segment_time",
+            str(chunk_seconds),
+            "-reset_timestamps",
+            "1",
+            "-c",
+            "copy",
+            str(pattern),
+        ]
+        subprocess.run(cmd, check=True)
+        chunks = sorted(tmp_path.glob(f"chunk_*{path.suffix.lower()}"))
+        if not chunks:
+            chunks = [path]
+        out = []
+        for ch in chunks:
+            audio_bytes = ch.read_bytes()
+            dur = probe_duration_seconds(ch)
+            out.append(
+                {
+                    "name": ch.name,
+                    "bytes": audio_bytes,
+                    "duration": dur if dur is not None else float(chunk_seconds),
+                }
+            )
+        return out
+
+
 def get_user_settings(session: Session, user_id: str) -> SettingsResponse:
     row = session.get(UserSettings, user_id)
     if not row:
-        return SettingsResponse()
+        return SettingsResponse(user_name="Rusty")
     return SettingsResponse(
         default_voice=row.default_voice or "nova",
         tts_speed=row.tts_speed if row.tts_speed is not None else SPEED_DEFAULT,
@@ -1114,6 +1402,7 @@ def get_user_settings(session: Session, user_id: str) -> SettingsResponse:
         font_scale=row.font_scale if row.font_scale is not None else 1.0,
         native_lang=row.native_lang or "en",
         show_native_defs=bool(getattr(row, "show_native_defs", True)) if getattr(row, "show_native_defs", None) is not None else True,
+        user_name=row.user_name or "Rusty",
     )
 
 
@@ -1140,6 +1429,10 @@ async def save_settings(settings: SettingsResponse):
         row.font_scale = settings.font_scale
         row.native_lang = settings.native_lang
         row.show_native_defs = settings.show_native_defs
+        if settings.user_name and settings.user_name.strip():
+            row.user_name = settings.user_name.strip()
+        elif row.user_name is None:
+            row.user_name = "Rusty"
         session.commit()
         return get_user_settings(session, user_id)
 

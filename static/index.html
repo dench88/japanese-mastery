@@ -3,7 +3,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <title>日本語マスター v0</title>
+    <title>shenyan.app: learn japanese 10x faster</title>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <style>
       body {
@@ -13,8 +13,8 @@
         padding: 0;
       }
       .logo {
-        width: 180px;
-        height: 100px;
+        width: 259.2px;
+        height: 144px;
         background: url("/images/logo_small.png") center/contain no-repeat;
         flex: 0 0 auto;
       }
@@ -167,13 +167,42 @@
         font-size: 0;
         text-indent: -9999px;
       }
-      .controls button:not(#speak-sentence) {
+      .controls button:not(#speak-sentence):not(.icon-btn) {
         height: 38px;
         width: 52px;
         min-width: 52px;
         padding: 0 0.45rem;
         font-size: 16px;
         line-height: 1;
+      }
+      .icon-btn {
+        width: 76px;
+        min-width: 76px;
+        height: 38px;
+        padding: 0;
+        border: none;
+        background: transparent center/contain no-repeat;
+      }
+      .icon-btn.hanaso-btn {
+        width: 152px;
+        min-width: 152px;
+        height: 76px;
+        background-image: url("/images/hanaso_trimmed.png");
+      }
+      .icon-btn.icon-active {
+        animation: hanaso-pulse 1.4s ease-in-out infinite;
+        filter: drop-shadow(0 0 10px rgba(0, 180, 90, 0.65));
+      }
+      @keyframes hanaso-pulse {
+        0% {
+          transform: scale(1);
+        }
+        50% {
+          transform: scale(1.03);
+        }
+        100% {
+          transform: scale(1);
+        }
       }
       .controls select {
         height: 38px;
@@ -220,6 +249,14 @@
         margin-top: 0.5rem;
         font-size: 0.85rem;
         color: #555;
+      }
+      .realtime-status {
+        padding: 0.5rem 0.65rem;
+        border-radius: 10px;
+        background: #f7f7f7;
+        border: 1px dashed #bbb;
+        color: #333;
+        font-size: 0.92rem;
       }
 
       audio {
@@ -395,6 +432,7 @@
           <button id="toggle-hiragana" title="ひらがな">あ</button>
           <button id="translate-btn">Translate</button>
           <button id="vocab-list-btn">語彙</button>
+          <button id="realtime-btn" class="icon-btn hanaso-btn" title="話そう" aria-label="話そう"></button>
           </div>
           <div id="sentence-meta" style="font-size: 0.85rem; color: #666">
             文 <span id="sentence-index">-</span> / <span id="sentence-total">-</span>
@@ -408,6 +446,7 @@
           <div id="status"></div>
 
           <audio id="player" controls></audio>
+          <audio id="realtime-audio" autoplay style="display:none;"></audio>
 
           <div id="deep-dive" class="deep-block"></div>
         </div>
@@ -435,6 +474,8 @@
       const sourcesBtn = document.getElementById("sources-btn");
       const voiceSelect = document.getElementById("voice-select");
       const translateBtn = document.getElementById("translate-btn");
+      const realtimeBtn = document.getElementById("realtime-btn");
+      const realtimeAudio = document.getElementById("realtime-audio");
 
       const speakBtn = document.getElementById("speak-sentence");
       const prevBtn = document.getElementById("prev-sentence");
@@ -463,10 +504,15 @@
       if (Number.isNaN(startIndex) || startIndex < 0) startIndex = 0;
       let currentVoice = voiceSelect.value || "nova";
       let currentSpeed = SPEED_DEFAULT;
+      let currentUserName = "Rusty";
       let nativeLang = "en";
       let showNativeDefs = true;
       let currentTranslation = "";
       let showTranslation = false;
+      let realtimeActive = false;
+      let realtimePc = null;
+      let realtimeStream = null;
+      let realtimeDc = null;
       let sourceTitleMap = {};
 
       async function loadSentences() {
@@ -619,9 +665,137 @@
         }
       }
 
+      function renderRealtimeStatus(message) {
+        deepDiveEl.innerHTML = `<div class="realtime-status">${escapeHtml(message)}</div>`;
+      }
+
+      async function stopRealtime(silent = false) {
+        realtimeActive = false;
+        setActive(realtimeBtn, false);
+        if (realtimeDc) {
+          try {
+            realtimeDc.close();
+          } catch (_) {}
+          realtimeDc = null;
+        }
+        if (realtimePc) {
+          try {
+            realtimePc.getSenders().forEach((s) => s.track && s.track.stop());
+            realtimePc.close();
+          } catch (_) {}
+          realtimePc = null;
+        }
+        if (realtimeStream) {
+          realtimeStream.getTracks().forEach((t) => t.stop());
+          realtimeStream = null;
+        }
+        if (!silent) {
+          renderRealtimeStatus("会話を終了しました。");
+        }
+      }
+
+      async function startRealtime() {
+        if (realtimeActive) return;
+        currentDeepDive = null;
+        deepDiveEl.innerHTML = "";
+        setActive(realtimeBtn, true);
+        renderRealtimeStatus("接続中…");
+        try {
+          let stream = null;
+          try {
+            stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          } catch (err) {
+            renderRealtimeStatus("マイクの使用を許可してください。");
+            throw err;
+          }
+          realtimeStream = stream;
+          const pc = new RTCPeerConnection();
+          realtimePc = pc;
+          stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+          pc.ontrack = (event) => {
+            if (!realtimeAudio) return;
+            realtimeAudio.srcObject = event.streams[0];
+            realtimeAudio.play().catch(() => {});
+          };
+          const dc = pc.createDataChannel("oai-events");
+          realtimeDc = dc;
+          dc.onopen = () => {
+            renderRealtimeStatus("会話中…");
+            try {
+              dc.send(JSON.stringify({ type: "response.create" }));
+            } catch (_) {}
+          };
+          dc.onmessage = (event) => {
+            try {
+              const msg = JSON.parse(event.data);
+              if (msg.type === "error") {
+                renderRealtimeStatus("接続エラー");
+              }
+            } catch (_) {}
+          };
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          const selectedVoice = voiceSelect.value || currentVoice;
+          currentVoice = selectedVoice || currentVoice;
+          const tokenRes = await fetch("/api/realtime_token", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ voice: selectedVoice, user_name: currentUserName }),
+          });
+          if (!tokenRes.ok) {
+            let detail = "";
+            try {
+              const errJson = await tokenRes.json();
+              detail = errJson.detail || errJson.error || "";
+            } catch (_) {
+              try {
+                detail = await tokenRes.text();
+              } catch (_) {}
+            }
+            throw new Error(detail || `token:${tokenRes.status}`);
+          }
+          const tokenData = await tokenRes.json();
+          const clientSecret = tokenData.client_secret || tokenData.value;
+          if (!clientSecret) {
+            throw new Error("token");
+          }
+          const sdpRes = await fetch("https://api.openai.com/v1/realtime/calls", {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${clientSecret}`,
+              "Content-Type": "application/sdp",
+            },
+            body: offer.sdp,
+          });
+          if (!sdpRes.ok) {
+            let detail = "";
+            try {
+              detail = await sdpRes.text();
+            } catch (_) {}
+            throw new Error(detail || `sdp:${sdpRes.status}`);
+          }
+          const answer = await sdpRes.text();
+          await pc.setRemoteDescription({ type: "answer", sdp: answer });
+          realtimeActive = true;
+          renderRealtimeStatus("会話中…");
+        } catch (err) {
+          console.error("realtime error:", err);
+          const message = err && err.message ? `接続エラー: ${err.message}` : "接続エラー";
+          renderRealtimeStatus(message);
+          await stopRealtime(true);
+        }
+      }
+
       speakBtn.onclick = speakCurrentSentence;
       voiceSelect.onchange = () => {
         currentVoice = voiceSelect.value || "nova";
+      };
+      realtimeBtn.onclick = async () => {
+        if (realtimeActive) {
+          await stopRealtime();
+        } else {
+          await startRealtime();
+        }
       };
 
       toggleHiraBtn.onclick = () => {
@@ -1237,6 +1411,11 @@
 
       function setActive(btn, isActive) {
         if (!btn) return;
+        if (btn.classList.contains("icon-btn")) {
+          btn.classList.toggle("icon-active", isActive);
+          btn.classList.remove("btn-active");
+          return;
+        }
         if (isActive) {
           btn.classList.add("btn-active");
         } else {
@@ -1382,6 +1561,7 @@
             currentSpeed = typeof s.tts_speed === "number" ? s.tts_speed : currentSpeed;
             nativeLang = s.native_lang || nativeLang;
             showNativeDefs = s.show_native_defs !== undefined ? s.show_native_defs : true;
+            currentUserName = (s.user_name || currentUserName || "Rusty").trim();
             translateBtn.textContent = getNativeShortLabel(nativeLang) || "Translate";
             if (s.font_scale) {
               document.documentElement.style.setProperty("--sentence-scale", s.font_scale);
@@ -1414,11 +1594,3 @@
     </script>
   </body>
 </html>
-
-
-
-
-
-
-
-
