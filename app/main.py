@@ -1339,6 +1339,26 @@ def audio_transcribe(req: AudioTranscribeRequest):
     return {"text": text, "segments": all_segments}
 
 
+@app.get("/api/audio_transcript")
+def audio_transcript(name: str):
+    target = AUDIO_DIR / name
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="file not found")
+    if target.suffix.lower() not in AUDIO_ALLOWED_EXTS:
+        raise HTTPException(status_code=403, detail="extension not allowed")
+    mtime = target.stat().st_mtime
+    cached = load_audio_transcript_cached(name, mtime)
+    if cached:
+        cached_text = (cached.get("text") or "").strip()
+        cached_segments = cached.get("segments", []) or []
+        return {
+            "text": cached_text,
+            "segments": cached_segments,
+            "progress_seconds": cached.get("progress_seconds") or 0,
+        }
+    return {"text": "", "segments": [], "progress_seconds": 0}
+
+
 @app.get("/api/audio_list")
 async def audio_list():
     files = []

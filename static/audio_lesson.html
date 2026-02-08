@@ -129,6 +129,7 @@
       } else {
         titleEl.textContent = file;
         audioEl.src = `/api/audio_file?name=${encodeURIComponent(file)}`;
+        loadCachedTranscript();
       }
 
       document.getElementById("play-btn").onclick = () => {
@@ -175,6 +176,27 @@
       document.getElementById("back-btn").onclick = () => {
         window.location.href = "/static/sources.html";
       };
+
+      async function loadCachedTranscript() {
+        if (!file) return;
+        try {
+          const res = await fetch(`/api/audio_transcript?name=${encodeURIComponent(file)}`);
+          if (!res.ok) return;
+          const data = await res.json();
+          segments = Array.isArray(data.segments) ? data.segments : [];
+          if (segments.length) {
+            renderSegments(segments);
+            activeIdx = -1;
+            return;
+          }
+          const text = (data.text || "").trim();
+          if (text) {
+            transcriptEl.textContent = text;
+          }
+        } catch (err) {
+          console.error(err);
+        }
+      }
 
       function renderSegments(items) {
         transcriptEl.textContent = "";
