@@ -40,6 +40,8 @@
     </style>
   </head>
   <body>
+    <script src="/static/auth.js"></script>
+    <script>requireAuth();</script>
     <h1>設定</h1>
     <div class="row">
       <label for="voice">デフォルト音声</label>
@@ -119,7 +121,7 @@
         };
         statusEl.textContent = "保存中…";
         try {
-          const res = await fetch("/api/settings", {
+          const res = await authFetch("/api/settings", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload),
@@ -134,7 +136,7 @@
 
       async function loadSettings() {
         try {
-          const res = await fetch("/api/settings");
+          const res = await authFetch("/api/settings");
           const data = await res.json();
           voiceEl.value = data.default_voice || "nova";
           speedEl.value = data.tts_speed ?? 1.1;
@@ -152,7 +154,7 @@
 
       async function loadSources() {
         try {
-          const res = await fetch("/api/source_list");
+          const res = await authFetch("/api/source_list");
           const data = await res.json();
           const sources = data.sources || [];
           defaultSourceEl.innerHTML = '<option value="">(指定なし)</option>' +

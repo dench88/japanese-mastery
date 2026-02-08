@@ -6,5 +6,8 @@ content/source_materials/*.pdf
 analysis_cache/
 tts_cache/
 vocab_cache/
+app.db
 app/app.db
 test_output.mp3
+recordings/
+*.pyc

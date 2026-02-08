@@ -235,6 +235,8 @@
     </style>
   </head>
   <body>
+    <script src="/static/auth.js"></script>
+    <script>requireAuth();</script>
     <div class="page">
       <div class="layout">
         <!-- LEFT: full text -->
@@ -345,7 +347,7 @@
 
       async function loadSentences() {
         try {
-          const res = await fetch(`/api/sentences${selectedSource ? `?source=${encodeURIComponent(selectedSource)}` : ""}`);
+          const res = await authFetch(`/api/sentences${selectedSource ? `?source=${encodeURIComponent(selectedSource)}` : ""}`);
           if (!res.ok) {
             fullTextEl.textContent = "Error loading sentences.";
             return;
@@ -361,7 +363,7 @@
 
       async function loadSentence(index) {
         try {
-          const res = await fetch(`/api/sentence/${index}${selectedSource ? `?source=${encodeURIComponent(selectedSource)}` : ""}`);
+          const res = await authFetch(`/api/sentence/${index}${selectedSource ? `?source=${encodeURIComponent(selectedSource)}` : ""}`);
           if (!res.ok) {
             if (res.status === 404) {
               statusEl.textContent = "No more sentences.";
@@ -414,7 +416,7 @@
         speakBtn.disabled = true;
 
         try {
-          const res = await fetch("/api/tts", {
+          const res = await authFetch("/api/tts", {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
@@ -525,7 +527,7 @@
           examples: [],
         });
         try {
-          const res = await fetch("/api/manual_brief", {
+          const res = await authFetch("/api/manual_brief", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -587,7 +589,7 @@
         if (!ok) return;
         statusEl.textContent = "削除中…";
         try {
-          const res = await fetch("/api/sentence/delete", {
+          const res = await authFetch("/api/sentence/delete", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ text: currentSentence }),
@@ -676,7 +678,7 @@
           if (!item.reading) {
             item.reading = await fetchWordReading(item.surface);
           }
-          const res = await fetch("/api/deep_dive", {
+          const res = await authFetch("/api/deep_dive", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ sentence: currentSentence, item }),
@@ -712,7 +714,7 @@
           }
           statusEl.textContent = "翻訳中…";
           try {
-            const res = await fetch("/api/translate_sentence", {
+            const res = await authFetch("/api/translate_sentence", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ text: currentSentence, target_lang: nativeLang }),
@@ -747,7 +749,7 @@
       async function fetchHardItems(sentence) {
         hardestEl.textContent = "";
         try {
-          const res = await fetch("/api/hard_items", {
+          const res = await authFetch("/api/hard_items", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ text: sentence }),
@@ -776,7 +778,7 @@
       async function fetchReading(sentence, suppressHiraDisplay = false) {
         if (!sentence) return;
         try {
-          const res = await fetch("/api/reading_sentence", {
+          const res = await authFetch("/api/reading_sentence", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ text: sentence }),
@@ -860,7 +862,7 @@
           if (!item.reading) {
             item.reading = await fetchWordReading(item.surface);
           }
-          const res = await fetch("/api/deep_dive", {
+          const res = await authFetch("/api/deep_dive", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ sentence: currentSentence, item: { type: "word", surface: item.surface, base_form: item.surface } }),
@@ -891,7 +893,7 @@
 
       async function deleteFetchedItem(item) {
         try {
-          await fetch("/api/hard_item/delete", {
+          await authFetch("/api/hard_item/delete", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ text: currentSentence, surface: item.surface }),
@@ -905,7 +907,7 @@
 
       async function playExampleAudio(text, surface) {
         try {
-          const res = await fetch("/api/tts_example", {
+          const res = await authFetch("/api/tts_example", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ text, surface, voice: currentVoice, speed: currentSpeed }),
@@ -952,7 +954,7 @@
       async function fetchWordReading(surface) {
         if (!surface) return "";
         try {
-          const res = await fetch("/api/reading_word", {
+          const res = await authFetch("/api/reading_word", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ surface }),
@@ -1103,7 +1105,7 @@
 
       async function applySettings() {
         try {
-          const res = await fetch("/api/settings");
+          const res = await authFetch("/api/settings");
           if (res.ok) {
             const s = await res.json();
             currentVoice = s.default_voice || currentVoice;

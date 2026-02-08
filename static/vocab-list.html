@@ -56,6 +56,8 @@
     </style>
   </head>
   <body>
+    <script src="/static/auth.js"></script>
+    <script>requireAuth();</script>
     <div class="top-bar">
       <h1>語彙リスト</h1>
       <button id="return-btn">本文へ戻る</button>
@@ -92,7 +94,7 @@
 
       async function loadVocab() {
         try {
-          const res = await fetch("/api/vocab_list");
+          const res = await authFetch("/api/vocab_list");
           if (!res.ok) {
             bodyEl.innerHTML = `<tr><td colspan="3">取得エラー</td></tr>`;
             return;

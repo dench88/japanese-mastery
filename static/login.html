@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>日本語マスター - Login</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      body {
+        font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+        background: #f5f5f5;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        min-height: 100vh;
+      }
+      .card {
+        background: #fff;
+        border: 1px solid #e0e0e0;
+        border-radius: 12px;
+        padding: 2rem;
+        width: 100%;
+        max-width: 380px;
+        box-shadow: 0 4px 16px rgba(0,0,0,0.06);
+      }
+      h1 {
+        font-size: 1.4rem;
+        margin-bottom: 0.25rem;
+        text-align: center;
+      }
+      .subtitle {
+        text-align: center;
+        color: #777;
+        font-size: 0.9rem;
+        margin-bottom: 1.5rem;
+      }
+      label {
+        display: block;
+        font-weight: 600;
+        font-size: 0.9rem;
+        margin-bottom: 0.25rem;
+        margin-top: 0.75rem;
+      }
+      input[type="email"],
+      input[type="password"],
+      input[type="text"] {
+        width: 100%;
+        padding: 0.55rem 0.65rem;
+        font-size: 1rem;
+        border: 1px solid #ccc;
+        border-radius: 6px;
+      }
+      input:focus {
+        outline: none;
+        border-color: #6da3f7;
+        box-shadow: 0 0 0 2px rgba(109,163,247,0.25);
+      }
+      .btn {
+        display: block;
+        width: 100%;
+        padding: 0.65rem;
+        font-size: 1rem;
+        font-weight: 600;
+        border: none;
+        border-radius: 8px;
+        cursor: pointer;
+        margin-top: 1.25rem;
+        background: #2563eb;
+        color: #fff;
+      }
+      .btn:hover { background: #1d4ed8; }
+      .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+      .switch {
+        text-align: center;
+        margin-top: 1rem;
+        font-size: 0.9rem;
+        color: #555;
+      }
+      .switch a {
+        color: #2563eb;
+        cursor: pointer;
+        text-decoration: none;
+        font-weight: 600;
+      }
+      .error {
+        color: #dc2626;
+        font-size: 0.9rem;
+        margin-top: 0.5rem;
+        text-align: center;
+      }
+      .register-fields { display: none; }
+      .register-fields.show { display: block; }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>日本語マスター</h1>
+      <div class="subtitle" id="mode-label">Sign in to continue</div>
+
+      <form id="auth-form" autocomplete="on">
+        <label for="email">Email</label>
+        <input type="email" id="email" required autocomplete="email" />
+
+        <label for="password">Password</label>
+        <input type="password" id="password" required autocomplete="current-password" minlength="8" />
+
+        <div class="register-fields" id="register-fields">
+          <label for="display-name">Display Name (optional)</label>
+          <input type="text" id="display-name" autocomplete="name" />
+        </div>
+
+        <div class="error" id="error"></div>
+        <button type="submit" class="btn" id="submit-btn">Sign In</button>
+      </form>
+
+      <div class="switch">
+        <span id="switch-text">Don't have an account?</span>
+        <a id="switch-link" href="#">Register</a>
+      </div>
+    </div>
+
+    <script>
+      const form = document.getElementById("auth-form");
+      const emailEl = document.getElementById("email");
+      const passwordEl = document.getElementById("password");
+      const displayNameEl = document.getElementById("display-name");
+      const errorEl = document.getElementById("error");
+      const submitBtn = document.getElementById("submit-btn");
+      const modeLabel = document.getElementById("mode-label");
+      const switchText = document.getElementById("switch-text");
+      const switchLink = document.getElementById("switch-link");
+      const registerFields = document.getElementById("register-fields");
+
+      let isRegister = false;
+
+      switchLink.onclick = (e) => {
+        e.preventDefault();
+        isRegister = !isRegister;
+        errorEl.textContent = "";
+        if (isRegister) {
+          modeLabel.textContent = "Create your account";
+          submitBtn.textContent = "Register";
+          switchText.textContent = "Already have an account?";
+          switchLink.textContent = "Sign In";
+          registerFields.classList.add("show");
+          passwordEl.setAttribute("autocomplete", "new-password");
+        } else {
+          modeLabel.textContent = "Sign in to continue";
+          submitBtn.textContent = "Sign In";
+          switchText.textContent = "Don't have an account?";
+          switchLink.textContent = "Register";
+          registerFields.classList.remove("show");
+          passwordEl.setAttribute("autocomplete", "current-password");
+        }
+      };
+
+      form.onsubmit = async (e) => {
+        e.preventDefault();
+        errorEl.textContent = "";
+        submitBtn.disabled = true;
+
+        const endpoint = isRegister ? "/api/auth/register" : "/api/auth/login";
+        const body = {
+          email: emailEl.value.trim(),
+          password: passwordEl.value,
+        };
+        if (isRegister && displayNameEl.value.trim()) {
+          body.display_name = displayNameEl.value.trim();
+        }
+
+        try {
+          const res = await fetch(endpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            errorEl.textContent = data.detail || "Something went wrong";
+            return;
+          }
+          localStorage.setItem("token", data.access_token);
+          window.location.href = "/static/sources.html";
+        } catch (err) {
+          console.error(err);
+          errorEl.textContent = "Network error. Please try again.";
+        } finally {
+          submitBtn.disabled = false;
+        }
+      };
+
+      // If already logged in, redirect
+      (async () => {
+        const token = localStorage.getItem("token");
+        if (!token) return;
+        try {
+          const res = await fetch("/api/auth/me", {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (res.ok) {
+            window.location.href = "/static/sources.html";
+          } else {
+            localStorage.removeItem("token");
+          }
+        } catch (_) {}
+      })();
+    </script>
+  </body>
+</html>

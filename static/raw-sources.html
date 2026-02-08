@@ -47,6 +47,8 @@
     </style>
   </head>
   <body>
+    <script src="/static/auth.js"></script>
+    <script>requireAuth();</script>
     <h1>原資料</h1>
     <div class="list" id="list">読込み中…</div>
     <div style="margin-top:1rem; display:flex; gap:0.5rem;">
@@ -60,7 +62,7 @@
 
       async function loadRaw() {
         try {
-          const res = await fetch("/api/raw_list");
+          const res = await authFetch("/api/raw_list");
           if (!res.ok) {
             listEl.textContent = "取得エラー";
             return;

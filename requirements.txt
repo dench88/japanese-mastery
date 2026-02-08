@@ -3,6 +3,10 @@ uvicorn
 openai
 python-dotenv
 sqlmodel
+sqlalchemy[asyncio]
+asyncpg
 pypdf
-cryptography
 python-multipart
+passlib[bcrypt]
+python-jose[cryptography]
+alembic
